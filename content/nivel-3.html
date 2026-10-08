@@ -1,0 +1,138 @@
+<div class="kicker">Nivel 3 · Estructuras de datos</div>
+<h1>Transacciones</h1>
+<p class="lead">Una transacción es un mensaje que dice: «gasto estas monedas que existían y creo estas otras nuevas». En este nivel verás cómo es exactamente en el código, cómo se convierte en bytes, cómo se calcula su identificador y las primeras reglas de consenso que debe cumplir.</p>
+
+<h2>El modelo UTXO: billetes, no saldos</h2>
+<p>Bitcoin no guarda «Ana tiene 3 BTC». Guarda una lista de <b>monedas sin gastar</b> (UTXO, <i>Unspent Transaction Outputs</i>), como billetes de distinto valor. Para pagar, rompes billetes enteros y recibes la vuelta.</p>
+<div class="analogy">Tienes un billete de 50 € y quieres pagar 30 €. No puedes «cortar» el billete: lo entregas entero y recibes 20 € de vuelta. En Bitcoin: gastas una moneda de 0,5 BTC (entrada), creas una de 0,3 BTC para el vendedor y otra de 0,1999 BTC para ti (el cambio). La diferencia (0,0001) es la comisión para el minero.</div>
+<pre class="mermaid">
+flowchart LR
+  subgraph ANTES["UTXO antes"]
+    U1["Moneda A<br/>0,5 BTC<br/>(de Ana)"]
+  end
+  subgraph TX["Transacción"]
+    IN["Entrada:<br/>gasta A<br/>+ firma de Ana"] --> OUT1["Salida 0:<br/>0,3 BTC → Beto"]
+    IN --> OUT2["Salida 1:<br/>0,1999 BTC → Ana (cambio)"]
+  end
+  subgraph DESPUES["UTXO después"]
+    U2["Moneda tx:0<br/>0,3 BTC"]
+    U3["Moneda tx:1<br/>0,1999 BTC"]
+  end
+  U1 --> IN
+  OUT1 --> U2
+  OUT2 --> U3
+  IN -. "0,0001 BTC de comisión" .-> M(("Minero"))
+</pre>
+
+<h2>Las piezas en el código</h2>
+<p>Todo está en <src file="src/primitives/transaction.h">src/primitives/transaction.h</src>. Son cuatro clases pequeñas.</p>
+
+<h3>COutPoint: «qué moneda gasto»</h3>
+<code-ref file="src/primitives/transaction.h" start="class COutPoint" end="std::string ToString() const;">
+  <n m="Txid hash;">El identificador (txid) de la transacción que creó la moneda…</n>
+  <n m="uint32_t n;">…y el número de salida dentro de ella. «txid:n» identifica cualquier moneda de la historia.</n>
+  <n m="NULL_INDEX">Valor especial 0xffffffff: «no apunta a nada». Lo usan las transacciones coinbase (las que crean monedas nuevas).</n>
+  <n m="SERIALIZE_METHODS(COutPoint">En bytes: 32 del hash + 4 del índice = 36 bytes.</n>
+</code-ref>
+
+<h3>CTxIn: una entrada</h3>
+<code-ref file="src/primitives/transaction.h" start="class CTxIn" end="SERIALIZE_METHODS(CTxIn">
+  <n m="COutPoint prevout;">La moneda que se gasta.</n>
+  <n m="CScript scriptSig;">El «desbloqueo»: normalmente la firma y la clave pública (en transacciones antiguas). Lo verás en el nivel 4.</n>
+  <n m="uint32_t nSequence;">Número de secuencia. Hoy se usa para bloqueos de tiempo relativos (BIP68) y para señalar reemplazos.</n>
+  <n m="CScriptWitness scriptWitness;">El «testigo» (SegWit): datos de desbloqueo que van aparte y no cuentan para el txid.</n>
+  <n m="SEQUENCE_FINAL = 0xffffffff;">Si todas las entradas tienen este valor, se ignora nLockTime.</n>
+  <n m="SEQUENCE_LOCKTIME_DISABLE_FLAG = (1U << 31);">Si el bit 31 está activo, nSequence NO es un bloqueo relativo.</n>
+  <n m="SEQUENCE_LOCKTIME_TYPE_FLAG = (1 << 22);">El bit 22 decide si el bloqueo relativo está en bloques o en unidades de 512 segundos.</n>
+  <n m="SEQUENCE_LOCKTIME_MASK = 0x0000ffff;">Los 16 bits bajos guardan la cantidad.</n>
+  <n m="SERIALIZE_METHODS(CTxIn">Fíjate: el testigo NO se serializa aquí; lo hace la transacción completa (para poder calcular el txid sin él).</n>
+</code-ref>
+
+<h3>CTxOut: una salida (una moneda nueva)</h3>
+<code-ref file="src/primitives/transaction.h" start="class CTxOut" end="return (nValue == -1);">
+  <n m="CAmount nValue;">Cantidad en satoshis (1 BTC = 100 000 000 satoshis). Es un entero de 64 bits: nada de decimales que redondeen.</n>
+  <n m="CScript scriptPubKey;">El «candado»: las condiciones para gastarla (por ejemplo, «firma de la clave cuyo HASH160 es…»).</n>
+  <n m="nValue = -1;">-1 marca una salida «nula» (vacía). Se usa internamente para monedas gastadas.</n>
+</code-ref>
+<code-ref file="src/consensus/amount.h" lines="11-27" title="cantidades y el límite de 21 millones">
+  <n m="typedef int64_t CAmount;">Las cantidades son enteros de 64 bits con signo.</n>
+  <n m="COIN = 100000000;">1 BTC = 10⁸ satoshis.</n>
+  <n m="Note that this constant is *not* the total money supply">Los propios desarrolladores lo aclaran: MAX_MONEY no es la oferta total, es un límite de cordura. La oferta real sale de la recompensa por bloque (nivel 5).</n>
+  <n m="MAX_MONEY = 21000000 * COIN;">21 millones de BTC en satoshis.</n>
+  <n m="MoneyRange">«¿Está entre 0 y MAX_MONEY?». Esta función se llama en muchos sitios de validación para evitar desbordamientos.</n>
+</code-ref>
+
+<h2>De objeto a bytes (y vuelta)</h2>
+<p>Hay dos formatos: el original y el extendido de SegWit, que añade un «marcador» <code>00</code>, unas «banderas» <code>01</code> y los testigos al final. El truco: un nodo antiguo que lee <code>00</code> cree que la transacción tiene 0 entradas.</p>
+<div class="bytes">
+  <div class="seg c1"><b>versión</b>4 bytes</div><div class="seg c5"><b>marcador</b>00</div><div class="seg c5"><b>flags</b>01</div>
+  <div class="seg c6"><b>nº entradas</b>CompactSize</div><div class="seg c2"><b>entradas</b>36 + script + 4 cada una</div>
+  <div class="seg c6"><b>nº salidas</b>CompactSize</div><div class="seg c4"><b>salidas</b>8 + script cada una</div>
+  <div class="seg c5"><b>testigos</b>sólo SegWit</div><div class="seg c1"><b>nLockTime</b>4 bytes</div>
+</div>
+<code-ref file="src/primitives/transaction.h" fn="UnserializeTransaction" title="leer una transacción">
+  <n m="s >> tx.version;">Lee los 4 bytes de versión.</n>
+  <n m="s >> tx.vin;">Intenta leer la lista de entradas. Si el siguiente byte es el marcador <code>00</code>, se lee como «lista vacía»…</n>
+  <n m="if (tx.vin.size() == 0 && fAllowWitness)">…y entonces sabemos que es el formato extendido (o una transacción sin entradas, que es inválida de todas formas).</n>
+  <n m="s >> flags;">Lee las banderas.</n>
+  <n m="if ((flags & 1) && fAllowWitness)">El bit 1 dice que hay testigos: se lee una pila de testigo por cada entrada.</n>
+  <n m="It's illegal to encode witnesses when all witness stacks are empty.">Defensa anti-maleabilidad: no se permite el formato extendido si todos los testigos están vacíos (habría dos codificaciones de lo mismo).</n>
+  <n m="Unknown transaction optional data">Banderas desconocidas: error. Reservado para futuras ampliaciones.</n>
+  <n m="s >> tx.nLockTime;">Por último, nLockTime.</n>
+</code-ref>
+<div class="game" data-game="txdecoder"></div>
+
+<h2>El identificador: txid y wtxid</h2>
+<code-ref file="src/primitives/transaction.cpp" start="Txid CTransaction::ComputeHash() const" end="return Wtxid::FromUint256((HashWriter{} << TX_WITH_WITNESS(*this)).GetHash());">
+  <n m="TX_NO_WITNESS(*this)">El <b>txid</b> es el doble SHA-256 de la transacción <b>sin testigos</b>. Así, quien retransmite una transacción no puede cambiar su txid tocando las firmas (que van en el testigo). Esto arregló la «maleabilidad» y permitió Lightning.</n>
+  <n m="if (!HasWitness())">Si no hay testigos, wtxid = txid.</n>
+  <n m="TX_WITH_WITNESS(*this)">El <b>wtxid</b> incluye los testigos. Se usa para retransmitir y para el compromiso de testigos del bloque.</n>
+</code-ref>
+<code-ref file="src/consensus/validation.h" fn="GetTransactionWeight" title="el «peso» (BIP141)">
+  <n m="(WITNESS_SCALE_FACTOR - 1)">Peso = tamaño sin testigo × 3 + tamaño total. Es decir: cada byte normal pesa 4 y cada byte de testigo pesa 1. Un bloque puede pesar como máximo 4 000 000. El «vsize» que ves en las carteras es peso / 4.</n>
+</code-ref>
+
+<h2>Primera barrera de consenso: CheckTransaction</h2>
+<p>Esta función comprueba lo que se puede comprobar <b>mirando sólo la transacción</b>, sin saber nada de la cadena. Cada línea tiene una historia (y dos de ellas, un fallo grave real).</p>
+<code-ref file="src/consensus/tx_check.cpp" fn="CheckTransaction" title="comprobaciones sin contexto">
+  <n m="if (tx.vin.empty())">Debe tener al menos una entrada…</n>
+  <n m="if (tx.vout.empty())">…y al menos una salida.</n>
+  <n m="* WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT">No puede ser más grande que un bloque entero (contando sin testigo, que aún no se ha validado).</n>
+  <n m="see CVE-2010-5139">Agosto de 2010: alguien creó una transacción con dos salidas de 92 mil millones de BTC cada una. La suma se desbordó (dio la vuelta como un cuentakilómetros) y parecía pequeña. Se crearon 184 mil millones de BTC. Satoshi publicó un arreglo en horas y la cadena se reorganizó. Estas líneas son ese arreglo.</n>
+  <n m="if (txout.nValue < 0)">Ninguna salida negativa…</n>
+  <n m="if (txout.nValue > MAX_MONEY)">…ni mayor que 21 millones…</n>
+  <n m="if (!MoneyRange(nValueOut))">…y la <b>suma acumulada</b> tampoco (comprobada en cada paso, para que nunca se desborde).</n>
+  <n m="see CVE-2018-17144">Septiembre de 2018: una optimización quitó esta comprobación en bloques. Un minero podría haber gastado <b>dos veces la misma moneda dentro de una transacción</b> (crash en unas versiones, inflación en otras). Se descubrió y arregló antes de que nadie lo explotara. Lección para auditores: las optimizaciones de rendimiento son peligrosas.</n>
+  <n m="if (!vInOutPoints.insert(txin.prevout).second)">Mete cada moneda gastada en un conjunto; si ya estaba, está repetida.</n>
+  <n m="if (tx.IsCoinBase())">La coinbase (primera transacción del bloque, la que paga al minero) no gasta nada…</n>
+  <n m="size() < 2 || tx.vin[0].scriptSig.size() > 100">…y su scriptSig debe medir entre 2 y 100 bytes (ahí los mineros meten la altura del bloque y lo que quieran, como el titular del Times del génesis).</n>
+  <n m="if (txin.prevout.IsNull())">Una transacción normal no puede tener entradas «nulas» (eso sólo lo hace la coinbase).</n>
+</code-ref>
+
+<h2>Segunda barrera: ¿existen las monedas y cuadran las cuentas?</h2>
+<p>Esto ya necesita el conjunto UTXO, así que se hace en <src file="src/consensus/tx_verify.cpp">tx_verify.cpp</src>:</p>
+<code-ref file="src/consensus/tx_verify.cpp" fn="Consensus::CheckTxInputs" title="entradas disponibles y suficientes">
+  <n m="if (!inputs.HaveInputs(tx))">Cada moneda que se intenta gastar debe estar en el UTXO. Si no está, o nunca existió o <b>ya se gastó</b>: así se impide el doble gasto.</n>
+  <n m="coin.IsCoinBase() && nSpendHeight - coin.nHeight < COINBASE_MATURITY">Las monedas recién minadas no se pueden gastar hasta 100 bloques después. Si hubiera una reorganización y ese bloque desapareciera, todas las transacciones que dependieran de esas monedas desaparecerían también.</n>
+  <n m="if (!MoneyRange(coin.out.nValue) || !MoneyRange(nValueIn))">Suma de entradas, comprobando desbordamiento en cada paso (otra vez la lección de 2010).</n>
+  <n m="if (nValueIn < value_out)">No puedes gastar más de lo que tienes: entradas ≥ salidas. <b>Esta línea es la que impide crear dinero de la nada</b> en transacciones normales.</n>
+  <n m="const CAmount txfee_aux = nValueIn - value_out;">La diferencia es la comisión. No se escribe en ningún sitio: es implícita.</n>
+</code-ref>
+<div class="game" data-game="utxo"></div>
+
+<h2>Bloqueos de tiempo</h2>
+<p>Una transacción puede decir «no soy válida hasta la altura X o la fecha Y» (<code>nLockTime</code>, absoluto) o «hasta N bloques después de que se confirmara la moneda que gasto» (<code>nSequence</code>, relativo, BIP68).</p>
+<code-ref file="src/consensus/tx_verify.cpp" fn="IsFinalTx" title="¿se puede incluir ya?">
+  <n m="if (tx.nLockTime == 0)">0 = sin bloqueo.</n>
+  <n m="LOCKTIME_THRESHOLD">Si nLockTime &lt; 500 000 000 se interpreta como altura de bloque; si no, como fecha UNIX. Truco de Satoshi para usar un único campo.</n>
+  <n m="if (!(txin.nSequence == CTxIn::SEQUENCE_FINAL))">Aunque el tiempo no haya llegado, si todas las entradas tienen nSequence = 0xffffffff la transacción es final (el bloqueo queda desactivado).</n>
+</code-ref>
+
+<div class="quiz" data-title="Test del nivel 3"><script type="application/json">[
+{"q":"¿Qué identifica de forma única una moneda (UTXO)?","o":["La dirección del dueño","El txid de la transacción que la creó + el índice de salida","El número de bloque","Su valor"],"a":1,"why":"COutPoint = (hash, n)."},
+{"q":"¿Dónde está escrita la comisión de una transacción?","o":["En un campo «fee»","En ningún sitio: es entradas − salidas","En la coinbase","En el testigo"],"a":1,"why":"CheckTxInputs la calcula como nValueIn − value_out."},
+{"q":"¿Por qué el txid no incluye los testigos?","o":["Para ahorrar espacio","Para que nadie pueda cambiar el txid alterando firmas (maleabilidad)","Porque los testigos son opcionales para todos","Por compatibilidad con Windows"],"a":1,"why":"ComputeHash usa TX_NO_WITNESS."},
+{"q":"¿Qué fallo real corrige la comprobación de entradas duplicadas en CheckTransaction?","o":["CVE-2010-5139","CVE-2018-17144","CVE-2012-2459","Ninguno"],"a":1,"why":"CVE-2018-17144: posible inflación/crash al gastar la misma moneda dos veces en una transacción."},
+{"q":"Una coinbase minada en el bloque 1000, ¿desde qué altura se puede gastar?","o":["1001","1100","2016","Inmediatamente"],"a":1,"why":"nSpendHeight − 1000 ≥ 100 → altura 1100."},
+{"q":"¿Cuánto pesa un byte de testigo frente a un byte normal?","o":["Igual","1 frente a 4","4 frente a 1","No pesa nada"],"a":1,"why":"Peso = base×3 + total → byte normal 4, byte de testigo 1."}
+]</script></div>

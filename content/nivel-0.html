@@ -1,0 +1,128 @@
+<div class="kicker">Nivel 0 · Punto de partida</div>
+<h1>No confíes: verifica el código tú mismo</h1>
+<p class="lead">Antes de leer una sola línea hay que asegurarse de que lees <b>el código auténtico</b>, el mismo que acaba convertido en el programa que ejecutas. Este nivel te enseña la cadena de confianza completa, cómo compilar y cómo orientarte en el repositorio.</p>
+
+<h2>La cadena de confianza</h2>
+<p>Cuando instalas un nodo hay varios eslabones entre «lo que escribieron los desarrolladores» y «lo que corre en tu ordenador». Cualquiera de ellos podría ser atacado. La idea es poder comprobar cada uno <b>sin depender de una sola persona</b>.</p>
+<pre class="mermaid">
+flowchart TD
+  A["Desarrolladores<br/>proponen cambios<br/>(pull requests)"] --> B["Revisión pública<br/>ACK / NACK<br/>en GitHub"]
+  B --> C["Mantenedor fusiona<br/>con commit FIRMADO (PGP)"]
+  C --> D["Etiqueta de versión<br/>firmada (v31.1)"]
+  D --> E["Compilación reproducible<br/>(Guix) por muchas personas"]
+  E --> F["SHA256SUMS firmado<br/>por varios constructores"]
+  F --> G["Tu descarga"]
+  D --> H["…o compilas tú<br/>desde el código"]
+  G --> I(("Tu nodo"))
+  H --> I
+</pre>
+<div class="analogy">Es como una receta familiar: varios cocineros (los constructores Guix) siguen la misma receta (el código) en sus cocinas y todos obtienen exactamente el mismo pastel, gramo a gramo. Si tu pastel pesa lo mismo que el de diez cocineros independientes, es muy difícil que alguien haya cambiado un ingrediente.</div>
+
+<h2>Opción A: obtener y comprobar el código fuente</h2>
+<ol class="steps">
+  <li><b>Clona el repositorio oficial.</b>
+<pre class="shell">git clone https://github.com/bitcoin/bitcoin.git
+cd bitcoin
+git checkout {{TAG}}        <span class="c"># la versión que explica esta web</span>
+git rev-parse HEAD           <span class="c"># debe dar {{COMMIT}}</span></pre></li>
+  <li><b>Comprueba la firma de la etiqueta.</b> Cada versión la firma un mantenedor con su clave PGP. Necesitas importar antes su clave pública (búscala en varias fuentes independientes: web personal, servidores de claves, charlas grabadas…).
+<pre class="shell">git tag -v {{TAG}}           <span class="c"># "Good signature from …"</span></pre></li>
+  <li><b>(Avanzado) Comprueba toda la historia de fusiones.</b> El script <src file="contrib/verify-commits/verify-commits.py">contrib/verify-commits/verify-commits.py</src> verifica que cada commit de fusión está firmado por una de las claves de <src file="contrib/verify-commits/trusted-keys">trusted-keys</src>. Ojo, el propio README advierte: «no puedes usar un script no confiable para verificarse a sí mismo». Usa una copia del script que ya hayas verificado antes.</li>
+</ol>
+
+<h2>Opción B: verificar los binarios publicados</h2>
+<p>Si prefieres descargar el programa ya compilado desde <code>bitcoincore.org</code>, descarga también <code>SHA256SUMS</code> y <code>SHA256SUMS.asc</code>:</p>
+<pre class="shell"><span class="c"># 1. ¿El archivo descargado tiene el hash que aparece en la lista?</span>
+sha256sum --ignore-missing --check SHA256SUMS
+<span class="c"># 2. ¿La lista está firmada por constructores en quienes confío?</span>
+gpg --verify SHA256SUMS.asc
+<span class="c"># 3. O todo junto con el script del propio repositorio:</span>
+./contrib/verify-binaries/verify.py pub {{TAG}}</pre>
+<p>Las claves de los constructores están en el repositorio <a href="https://github.com/bitcoin-core/guix.sigs" target="_blank" rel="noopener">bitcoin-core/guix.sigs</a> (carpeta <code>builder-keys/</code>). Tú decides cuántas firmas independientes te bastan.</p>
+<div class="game" data-game="fileverify"></div>
+
+<h2>Opción C (la mejor): compilación reproducible</h2>
+<p>El sistema <src file="contrib/guix/README.md">contrib/guix</src> compila Bitcoin Core dentro de un entorno totalmente controlado (GNU Guix) partiendo de un compilador mínimo, de forma que <b>cualquiera obtiene binarios idénticos bit a bit</b>. Los constructores publican los hashes de lo que obtuvieron (<code>guix-attest</code>) y cualquiera puede compararlos (<code>guix-verify</code>). Si tú también compilas con Guix y te sale el mismo hash, has cerrado el círculo: el binario oficial sale exactamente de este código.</p>
+
+<h2>Compilar para leer y experimentar</h2>
+<p>Para estudiar no hace falta Guix; basta con CMake (instrucciones completas en <src file="doc/build-unix.md">doc/build-unix.md</src>):</p>
+<pre class="shell"><span class="c"># Debian/Ubuntu: dependencias mínimas</span>
+sudo apt-get install build-essential cmake pkgconf python3 libevent-dev libboost-dev
+cmake -B build
+cmake --build build -j"$(nproc)"
+ctest --test-dir build          <span class="c"># ejecuta las pruebas unitarias</span>
+./build/bin/bitcoind -regtest   <span class="c"># un nodo en una red privada de pruebas</span></pre>
+<div class="callout info"><span class="t">Consejo para aprender</span><p>Arranca un nodo en <code>-regtest</code>: es una red privada donde tú minas bloques al instante (<code>bitcoin-cli -regtest generatetoaddress 1 &lt;dirección&gt;</code>). Así puedes poner puntos de ruptura con <code>gdb</code> en cualquier función de esta web y ver cómo se ejecuta.</p></div>
+
+<h2>Así arranca todo: <code>main()</code></h2>
+<p>El programa <code>bitcoind</code> empieza aquí. Fíjate en que es corto: casi todo el trabajo lo delega.</p>
+<code-ref file="src/bitcoind.cpp" start="MAIN_FUNCTION" title="punto de entrada de bitcoind">
+  <n m="MAIN_FUNCTION"><code>MAIN_FUNCTION</code> es una macro que se convierte en <code>int main(int argc, char* argv[])</code>: la primera función que ejecuta el sistema operativo.</n>
+  <n m="NodeContext node;">Se crea el <code>NodeContext</code>: una «caja» que contendrá todos los componentes del nodo (red, mempool, cadena…). Al principio está vacía.</n>
+  <n m="MakeNodeInit">Prepara la inicialización. En el modo multiproceso esto puede lanzar otros procesos; en el normal, sólo configura.</n>
+  <n m="SetupEnvironment();">Ajustes del sistema: idioma, permisos de archivos (umask), etc.</n>
+  <n m="noui_connect();">Conecta los mensajes de error/aviso a la consola (no hay interfaz gráfica).</n>
+  <n m="ParseArgs(node, argc, argv)">Lee las opciones de la línea de comandos y de <code>bitcoin.conf</code>.</n>
+  <n m="ProcessInitCommands">Si pediste <code>-help</code> o <code>-version</code>, lo muestra y termina.</n>
+  <n m="!AppInit(node)">Arranca el nodo de verdad (los 13 pasos del <a href="nivel-12.html">nivel 12</a>) y luego <b>espera</b> (<code>wait()</code>) hasta que alguien pida parar (Ctrl+C o el RPC <code>stop</code>).</n>
+  <n m="Interrupt(node);">Avisa a todos los hilos de que deben terminar…</n>
+  <n m="Shutdown(node);">…y apaga ordenadamente: guarda la caché de monedas a disco, cierra bases de datos, etc.</n>
+</code-ref>
+
+<h2>Mapa del repositorio</h2>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Carpeta</th><th>Qué hay</th><th>¿Afecta al consenso?</th></tr></thead>
+<tbody>
+<tr><td><a href="explorador.html#d=src/consensus"><code>src/consensus/</code></a></td><td>Las reglas puras: cantidades, límites, Merkle, comprobaciones de transacciones.</td><td><span class="badge cons">Sí, crítico</span></td></tr>
+<tr><td><code>src/validation.cpp</code>, <code>src/pow.cpp</code></td><td>Aceptar bloques, elegir cadena, prueba de trabajo.</td><td><span class="badge cons">Sí, crítico</span></td></tr>
+<tr><td><a href="explorador.html#d=src/script"><code>src/script/</code></a></td><td>El intérprete de Script y las firmas.</td><td><span class="badge cons">Sí (interpreter.cpp)</span></td></tr>
+<tr><td><a href="explorador.html#d=src/primitives"><code>src/primitives/</code></a></td><td>Transacción y bloque.</td><td><span class="badge cons">Sí</span></td></tr>
+<tr><td><a href="explorador.html#d=src/crypto"><code>src/crypto/</code></a>, <a href="explorador.html#d=src/secp256k1"><code>src/secp256k1/</code></a></td><td>SHA-256, RIPEMD-160, curvas elípticas.</td><td><span class="badge cons">Sí</span></td></tr>
+<tr><td><a href="explorador.html#d=src/kernel"><code>src/kernel/</code></a></td><td>Parámetros de red (génesis, alturas de activación) y núcleo reutilizable.</td><td><span class="badge cons">Sí</span></td></tr>
+<tr><td><a href="explorador.html#d=src/node"><code>src/node/</code></a></td><td>Almacenamiento, minero, descargas…</td><td><span class="badge">Parcial</span></td></tr>
+<tr><td><code>src/net*.cpp</code>, <code>src/addrman.cpp</code></td><td>Red P2P.</td><td><span class="badge pol">No, pero es superficie de ataque</span></td></tr>
+<tr><td><a href="explorador.html#d=src/policy"><code>src/policy/</code></a>, <code>src/txmempool.cpp</code></td><td>Mempool y reglas locales de retransmisión.</td><td><span class="badge pol">No (política)</span></td></tr>
+<tr><td><a href="explorador.html#d=src/wallet"><code>src/wallet/</code></a></td><td>La cartera.</td><td><span class="badge pol">No</span></td></tr>
+<tr><td><a href="explorador.html#d=src/rpc"><code>src/rpc/</code></a>, <code>src/init.cpp</code></td><td>Órdenes y arranque.</td><td><span class="badge pol">No</span></td></tr>
+<tr><td><a href="explorador.html#d=src/qt"><code>src/qt/</code></a></td><td>Interfaz gráfica.</td><td><span class="badge pol">No</span></td></tr>
+<tr><td><a href="explorador.html#d=src/test"><code>src/test/</code></a>, <a href="explorador.html#d=test/functional"><code>test/</code></a></td><td>Pruebas unitarias, de fuzzing y funcionales.</td><td><span class="badge ok">Te ayudan a auditar</span></td></tr>
+<tr><td><a href="explorador.html#d=contrib/guix"><code>contrib/guix/</code></a></td><td>Compilación reproducible.</td><td><span class="badge ok">Te ayudan a verificar</span></td></tr>
+</tbody></table></div>
+
+<h2>Para leer C++ sin saber C++</h2>
+<p>Bitcoin Core está escrito en C++. No necesitas dominarlo; con esta chuleta podrás seguir el 90 % del código.</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Ves esto</th><th>Significa</th></tr></thead>
+<tbody>
+<tr><td><code>// texto</code> o <code>/* texto */</code></td><td>Comentario: el compilador lo ignora. ¡Léelos! Explican el porqué.</td></tr>
+<tr><td><code>int64_t x = 5;</code></td><td>Variable <code>x</code>, entero de 64 bits con signo. <code>uint32_t</code> = entero de 32 bits sin signo (nunca negativo).</td></tr>
+<tr><td><code>class CTxOut { … };</code></td><td>Define un tipo de objeto con datos (campos) y funciones (métodos). La «C» inicial es una costumbre antigua: «Class».</td></tr>
+<tr><td><code>std::vector&lt;CTxIn&gt; vin;</code></td><td>Una lista de longitud variable de objetos <code>CTxIn</code>.</td></tr>
+<tr><td><code>const CBlock&amp; block</code></td><td>Recibe el bloque «por referencia» (sin copiarlo) y promete no modificarlo (<code>const</code>).</td></tr>
+<tr><td><code>CBlockIndex* pindex</code></td><td>Un puntero: la dirección de memoria donde está el objeto. <code>pindex-&gt;nHeight</code> lee su campo.</td></tr>
+<tr><td><code>nullptr</code></td><td>Puntero que no apunta a nada.</td></tr>
+<tr><td><code>A::B</code></td><td><code>B</code> dentro del espacio de nombres o clase <code>A</code>. Ej.: <code>Consensus::CheckTxInputs</code>.</td></tr>
+<tr><td><code>return state.Invalid(…, "bad-…")</code></td><td>Patrón típico: marca algo como inválido con un motivo y sale de la función devolviendo <code>false</code>.</td></tr>
+<tr><td><code>assert(x);</code></td><td>Si <code>x</code> es falso, el programa se detiene en el acto. Se usa para cosas que «no pueden pasar».</td></tr>
+<tr><td><code>a &gt;&gt; n</code>, <code>a &lt;&lt; n</code>, <code>&amp;</code>, <code>|</code>, <code>^</code></td><td>Operaciones de bits: desplazar a la derecha (dividir por 2ⁿ), a la izquierda (multiplicar), Y, O, O-exclusivo.</td></tr>
+<tr><td><code>template&lt;typename T&gt;</code></td><td>Función o clase «genérica» que sirve para varios tipos.</td></tr>
+<tr><td><code>EXCLUSIVE_LOCKS_REQUIRED(cs_main)</code></td><td>Anotación: para llamar a esta función hay que tener cogido el candado <code>cs_main</code> (para que dos hilos no toquen lo mismo a la vez).</td></tr>
+<tr><td><code>LOCK(cs_main);</code></td><td>Coge ese candado hasta el final del bloque <code>{ }</code>.</td></tr>
+<tr><td><code>auto x{f()};</code></td><td>Variable cuyo tipo deduce el compilador. Las llaves <code>{}</code> son otra forma de inicializar.</td></tr>
+<tr><td><code>std::optional&lt;T&gt;</code></td><td>Un valor que puede estar o no estar.</td></tr>
+</tbody></table></div>
+
+<h2>Cómo usar esta web junto a tu copia del código</h2>
+<ol class="steps">
+  <li>Ten abierta tu copia (<code>git checkout {{TAG}}</code>) en un editor.</li>
+  <li>En cada fragmento de esta web verás el archivo y las líneas exactas (p. ej. <code>src/pow.cpp</code> · líneas 50–85). Ábrelas en tu editor y compara.</li>
+  <li>Si quieres comprobar que esta web no se ha inventado nada, ejecuta su generador: descarga el proyecto, ejecuta <code>python3 build.py</code> y fallará si algún fragmento citado no existe exactamente en ese commit.</li>
+</ol>
+
+<div class="quiz" data-title="Test del nivel 0"><script type="application/json">[
+{"q":"¿Qué comprueba <code>git tag -v {{TAG}}</code>?","o":["Que el código compila","Que la etiqueta de la versión está firmada por una clave PGP concreta","Que no hay errores en el código","Que el binario descargado es correcto"],"a":1,"why":"Verifica la firma criptográfica de la etiqueta. Tú decides si confías en esa clave."},
+{"q":"¿Qué aporta la compilación reproducible con Guix?","o":["Compila más rápido","Permite que muchas personas independientes obtengan binarios idénticos bit a bit desde el mismo código","Cifra el binario","Evita tener que leer el código"],"a":1,"why":"Si muchos constructores independientes obtienen el mismo hash, es muy difícil colar un binario distinto del código publicado."},
+{"q":"¿Cuál de estas carpetas contiene reglas de consenso?","o":["src/qt","src/wallet","src/consensus","src/rpc"],"a":2,"why":"src/consensus (junto a validation.cpp, pow.cpp, script/interpreter.cpp…) define qué es un bloque válido."},
+{"q":"¿Por qué no basta con ejecutar verify-commits.py recién descargado sobre el propio repositorio?","o":["Porque es lento","Porque un script no confiable no puede verificarse a sí mismo: podría estar manipulado","Porque sólo funciona en Windows","Porque no existe"],"a":1,"why":"Lo dice su propio README: necesitas una copia del verificador en la que ya confíes."},
+{"q":"En C++, ¿qué suele significar <code>return state.Invalid(..., \"bad-txns-...\")</code>?","o":["Que la función ha tenido éxito","Que se marca como inválido con un motivo y la función devuelve false","Que el programa se cierra","Que se imprime un aviso y continúa"],"a":1,"why":"Es el patrón estándar de rechazo en validación."}
+]</script></div>

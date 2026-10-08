@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nivel 3 · Transacciones · Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="nivel-3">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html" class="active">3 · Transacciones</a></li>
+<li><a href="nivel-4.html">4 · Script</a></li>
+<li><a href="nivel-5.html">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html">8 · Red P2P</a></li>
+<li><a href="nivel-9.html">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <div class="kicker">Nivel 3 · Estructuras de datos</div>
+<h1>Transacciones</h1>
+<p class="lead">Una transacción es un mensaje que dice: «gasto estas monedas que existían y creo estas otras nuevas». En este nivel verás cómo es exactamente en el código, cómo se convierte en bytes, cómo se calcula su identificador y las primeras reglas de consenso que debe cumplir.</p>
+
+<h2>El modelo UTXO: billetes, no saldos</h2>
+<p>Bitcoin no guarda «Ana tiene 3 BTC». Guarda una lista de <b>monedas sin gastar</b> (UTXO, <i>Unspent Transaction Outputs</i>), como billetes de distinto valor. Para pagar, rompes billetes enteros y recibes la vuelta.</p>
+<div class="analogy">Tienes un billete de 50 € y quieres pagar 30 €. No puedes «cortar» el billete: lo entregas entero y recibes 20 € de vuelta. En Bitcoin: gastas una moneda de 0,5 BTC (entrada), creas una de 0,3 BTC para el vendedor y otra de 0,1999 BTC para ti (el cambio). La diferencia (0,0001) es la comisión para el minero.</div>
+<pre class="mermaid">
+flowchart LR
+  subgraph ANTES["UTXO antes"]
+    U1["Moneda A<br/>0,5 BTC<br/>(de Ana)"]
+  end
+  subgraph TX["Transacción"]
+    IN["Entrada:<br/>gasta A<br/>+ firma de Ana"] --> OUT1["Salida 0:<br/>0,3 BTC → Beto"]
+    IN --> OUT2["Salida 1:<br/>0,1999 BTC → Ana (cambio)"]
+  end
+  subgraph DESPUES["UTXO después"]
+    U2["Moneda tx:0<br/>0,3 BTC"]
+    U3["Moneda tx:1<br/>0,1999 BTC"]
+  end
+  U1 --> IN
+  OUT1 --> U2
+  OUT2 --> U3
+  IN -. "0,0001 BTC de comisión" .-> M(("Minero"))
+</pre>
+
+<h2>Las piezas en el código</h2>
+<p>Todo está en <a class="srclink" href="explorador.html#f=src/primitives/transaction.h">src/primitives/transaction.h</a>. Son cuatro clases pequeñas.</p>
+
+<h3>COutPoint: «qué moneda gasto»</h3>
+<figure class="cref" id="c1" data-start="28" data-file="src/primitives/transaction.h"><figcaption><span class="cref-file">src/primitives/transaction.h</span><span class="cref-lines">líneas 28–54</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/primitives/transaction.h#L28-L54" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/primitives/transaction.h&amp;l=28" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">class COutPoint
+{
+public:
+    Txid hash;
+    uint32_t n;
+
+    static constexpr uint32_t NULL_INDEX = std::numeric_limits&lt;uint32_t&gt;::max();
+
+    COutPoint(): n(NULL_INDEX) { }
+    COutPoint(const Txid&amp; hashIn, uint32_t nIn): hash(hashIn), n(nIn) { }
+
+    SERIALIZE_METHODS(COutPoint, obj) { READWRITE(obj.hash, obj.n); }
+
+    void SetNull() { hash.SetNull(); n = NULL_INDEX; }
+    bool IsNull() const { return (hash.IsNull() &amp;&amp; n == NULL_INDEX); }
+
+    friend bool operator&lt;(const COutPoint&amp; a, const COutPoint&amp; b)
+    {
+        return std::tie(a.hash, a.n) &lt; std::tie(b.hash, b.n);
+    }
+
+    friend bool operator==(const COutPoint&amp; a, const COutPoint&amp; b)
+    {
+        return (a.hash == b.hash &amp;&amp; a.n == b.n);
+    }
+
+    std::string ToString() const;</code></pre><script type="application/json" class="cref-notes">[{"line": 31, "html": "El identificador (txid) de la transacción que creó la moneda…"}, {"line": 32, "html": "…y el número de salida dentro de ella. «txid:n» identifica cualquier moneda de la historia."}, {"line": 34, "html": "Valor especial 0xffffffff: «no apunta a nada». Lo usan las transacciones coinbase (las que crean monedas nuevas)."}, {"line": 39, "html": "En bytes: 32 del hash + 4 del índice = 36 bytes."}]</script></figure>
+
+<h3>CTxIn: una entrada</h3>
+<figure class="cref" id="c2" data-start="61" data-file="src/primitives/transaction.h"><figcaption><span class="cref-file">src/primitives/transaction.h</span><span class="cref-lines">líneas 61–124</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/primitives/transaction.h#L61-L124" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/primitives/transaction.h&amp;l=61" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">class CTxIn
+{
+public:
+    COutPoint prevout;
+    CScript scriptSig;
+    uint32_t nSequence;
+    CScriptWitness scriptWitness; //!&lt; Only serialized through CTransaction
+
+    /**
+     * Setting nSequence to this value for every input in a transaction
+     * disables nLockTime/IsFinalTx().
+     * It fails OP_CHECKLOCKTIMEVERIFY/CheckLockTime() for any input that has
+     * it set (BIP 65).
+     * It has SEQUENCE_LOCKTIME_DISABLE_FLAG set (BIP 68/112).
+     */
+    static const uint32_t SEQUENCE_FINAL = 0xffffffff;
+    /**
+     * This is the maximum sequence number that enables both nLockTime and
+     * OP_CHECKLOCKTIMEVERIFY (BIP 65).
+     * It has SEQUENCE_LOCKTIME_DISABLE_FLAG set (BIP 68/112).
+     */
+    static const uint32_t MAX_SEQUENCE_NONFINAL{SEQUENCE_FINAL - 1};
+
+    // Below flags apply in the context of BIP 68. BIP 68 requires the tx
+    // version to be set to 2, or higher.
+    /**
+     * If this flag is set, CTxIn::nSequence is NOT interpreted as a
+     * relative lock-time.
+     * It skips SequenceLocks() for any input that has it set (BIP 68).
+     * It fails OP_CHECKSEQUENCEVERIFY/CheckSequence() for any input that has
+     * it set (BIP 112).
+     */
+    static const uint32_t SEQUENCE_LOCKTIME_DISABLE_FLAG = (1U &lt;&lt; 31);
+
+    /**
+     * If CTxIn::nSequence encodes a relative lock-time and this flag
+     * is set, the relative lock-time has units of 512 seconds,
+     * otherwise it specifies blocks with a granularity of 1. */
+    static const uint32_t SEQUENCE_LOCKTIME_TYPE_FLAG = (1 &lt;&lt; 22);
+
+    /**
+     * If CTxIn::nSequence encodes a relative lock-time, this mask is
+     * applied to extract that lock-time from the sequence field. */
+    static const uint32_t SEQUENCE_LOCKTIME_MASK = 0x0000ffff;
+
+    /**
+     * In order to use the same number of bits to encode roughly the
+     * same wall-clock duration, and because blocks are naturally
+     * limited to occur every 600s on average, the minimum granularity
+     * for time-based relative lock-time is fixed at 512 seconds.
+     * Converting from CTxIn::nSequence to seconds is performed by
+     * multiplying by 512 = 2^9, or equivalently shifting up by
+     * 9 bits. */
+    static const int SEQUENCE_LOCKTIME_GRANULARITY = 9;
+
+    CTxIn()
+    {
+        nSequence = SEQUENCE_FINAL;
+    }
+
+    explicit CTxIn(COutPoint prevoutIn, CScript scriptSigIn=CScript(), uint32_t nSequenceIn=SEQUENCE_FINAL);
+    CTxIn(Txid hashPrevTx, uint32_t nOut, CScript scriptSigIn=CScript(), uint32_t nSequenceIn=SEQUENCE_FINAL);
+
+    SERIALIZE_METHODS(CTxIn, obj) { READWRITE(obj.prevout, obj.scriptSig, obj.nSequence); }</code></pre><script type="application/json" class="cref-notes">[{"line": 64, "html": "La moneda que se gasta."}, {"line": 65, "html": "El «desbloqueo»: normalmente la firma y la clave pública (en transacciones antiguas). Lo verás en el nivel 4."}, {"line": 66, "html": "Número de secuencia. Hoy se usa para bloqueos de tiempo relativos (BIP68) y para señalar reemplazos."}, {"line": 67, "html": "El «testigo» (SegWit): datos de desbloqueo que van aparte y no cuentan para el txid."}, {"line": 76, "html": "Si todas las entradas tienen este valor, se ignora nLockTime."}, {"line": 93, "html": "Si el bit 31 está activo, nSequence NO es un bloqueo relativo."}, {"line": 99, "html": "El bit 22 decide si el bloqueo relativo está en bloques o en unidades de 512 segundos."}, {"line": 104, "html": "Los 16 bits bajos guardan la cantidad."}, {"line": 124, "html": "Fíjate: el testigo NO se serializa aquí; lo hace la transacción completa (para poder calcular el txid sin él)."}]</script></figure>
+
+<h3>CTxOut: una salida (una moneda nueva)</h3>
+<figure class="cref" id="c3" data-start="139" data-file="src/primitives/transaction.h"><figcaption><span class="cref-file">src/primitives/transaction.h</span><span class="cref-lines">líneas 139–162</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/primitives/transaction.h#L139-L162" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/primitives/transaction.h&amp;l=139" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">class CTxOut
+{
+public:
+    CAmount nValue;
+    CScript scriptPubKey;
+
+    CTxOut()
+    {
+        SetNull();
+    }
+
+    CTxOut(const CAmount&amp; nValueIn, CScript scriptPubKeyIn);
+
+    SERIALIZE_METHODS(CTxOut, obj) { READWRITE(obj.nValue, obj.scriptPubKey); }
+
+    void SetNull()
+    {
+        nValue = -1;
+        scriptPubKey.clear();
+    }
+
+    bool IsNull() const
+    {
+        return (nValue == -1);</code></pre><script type="application/json" class="cref-notes">[{"line": 142, "html": "Cantidad en satoshis (1 BTC = 100 000 000 satoshis). Es un entero de 64 bits: nada de decimales que redondeen."}, {"line": 143, "html": "El «candado»: las condiciones para gastarla (por ejemplo, «firma de la clave cuyo HASH160 es…»)."}, {"line": 156, "html": "-1 marca una salida «nula» (vacía). Se usa internamente para monedas gastadas."}]</script></figure>
+<figure class="cref" id="c4" data-start="11" data-file="src/consensus/amount.h"><figcaption><span class="cref-file">src/consensus/amount.h</span><span class="cref-lines">líneas 11–27</span><span class="cref-title">cantidades y el límite de 21 millones</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/consensus/amount.h#L11-L27" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/consensus/amount.h&amp;l=11" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">/** Amount in satoshis (Can be negative) */
+typedef int64_t CAmount;
+
+/** The amount of satoshis in one BTC. */
+static constexpr CAmount COIN = 100000000;
+
+/** No amount larger than this (in satoshi) is valid.
+ *
+ * Note that this constant is *not* the total money supply, which in Bitcoin
+ * currently happens to be less than 21,000,000 BTC for various reasons, but
+ * rather a sanity check. As this sanity check is used by consensus-critical
+ * validation code, the exact value of the MAX_MONEY constant is consensus
+ * critical; in unusual circumstances like a(nother) overflow bug that allowed
+ * for the creation of coins out of thin air modification could lead to a fork.
+ * */
+static constexpr CAmount MAX_MONEY = 21000000 * COIN;
+inline bool MoneyRange(const CAmount&amp; nValue) { return (nValue &gt;= 0 &amp;&amp; nValue &lt;= MAX_MONEY); }</code></pre><script type="application/json" class="cref-notes">[{"line": 12, "html": "Las cantidades son enteros de 64 bits con signo."}, {"line": 15, "html": "1 BTC = 10⁸ satoshis."}, {"line": 19, "html": "Los propios desarrolladores lo aclaran: MAX_MONEY no es la oferta total, es un límite de cordura. La oferta real sale de la recompensa por bloque (nivel 5)."}, {"line": 26, "html": "21 millones de BTC en satoshis."}, {"line": 27, "html": "«¿Está entre 0 y MAX_MONEY?». Esta función se llama en muchos sitios de validación para evitar desbordamientos."}]</script></figure>
+
+<h2>De objeto a bytes (y vuelta)</h2>
+<p>Hay dos formatos: el original y el extendido de SegWit, que añade un «marcador» <code>00</code>, unas «banderas» <code>01</code> y los testigos al final. El truco: un nodo antiguo que lee <code>00</code> cree que la transacción tiene 0 entradas.</p>
+<div class="bytes">
+  <div class="seg c1"><b>versión</b>4 bytes</div><div class="seg c5"><b>marcador</b>00</div><div class="seg c5"><b>flags</b>01</div>
+  <div class="seg c6"><b>nº entradas</b>CompactSize</div><div class="seg c2"><b>entradas</b>36 + script + 4 cada una</div>
+  <div class="seg c6"><b>nº salidas</b>CompactSize</div><div class="seg c4"><b>salidas</b>8 + script cada una</div>
+  <div class="seg c5"><b>testigos</b>sólo SegWit</div><div class="seg c1"><b>nLockTime</b>4 bytes</div>
+</div>
+<figure class="cref" id="c5" data-start="200" data-file="src/primitives/transaction.h"><figcaption><span class="cref-file">src/primitives/transaction.h</span><span class="cref-lines">líneas 200–238</span><span class="cref-title">leer una transacción</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/primitives/transaction.h#L200-L238" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/primitives/transaction.h&amp;l=200" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">template&lt;typename Stream, typename TxType&gt;
+void UnserializeTransaction(TxType&amp; tx, Stream&amp; s, const TransactionSerParams&amp; params)
+{
+    const bool fAllowWitness = params.allow_witness;
+
+    s &gt;&gt; tx.version;
+    unsigned char flags = 0;
+    tx.vin.clear();
+    tx.vout.clear();
+    /* Try to read the vin. In case the dummy is there, this will be read as an empty vector. */
+    s &gt;&gt; tx.vin;
+    if (tx.vin.size() == 0 &amp;&amp; fAllowWitness) {
+        /* We read a dummy or an empty vin. */
+        s &gt;&gt; flags;
+        if (flags != 0) {
+            s &gt;&gt; tx.vin;
+            s &gt;&gt; tx.vout;
+        }
+    } else {
+        /* We read a non-empty vin. Assume a normal vout follows. */
+        s &gt;&gt; tx.vout;
+    }
+    if ((flags &amp; 1) &amp;&amp; fAllowWitness) {
+        /* The witness flag is present, and we support witnesses. */
+        flags ^= 1;
+        for (size_t i = 0; i &lt; tx.vin.size(); i++) {
+            s &gt;&gt; tx.vin[i].scriptWitness.stack;
+        }
+        if (!tx.HasWitness()) {
+            /* It&#x27;s illegal to encode witnesses when all witness stacks are empty. */
+            throw std::ios_base::failure(&quot;Superfluous witness record&quot;);
+        }
+    }
+    if (flags) {
+        /* Unknown flag in the serialization */
+        throw std::ios_base::failure(&quot;Unknown transaction optional data&quot;);
+    }
+    s &gt;&gt; tx.nLockTime;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 205, "html": "Lee los 4 bytes de versión."}, {"line": 210, "html": "Intenta leer la lista de entradas. Si el siguiente byte es el marcador <code>00<\/code>, se lee como «lista vacía»…"}, {"line": 211, "html": "…y entonces sabemos que es el formato extendido (o una transacción sin entradas, que es inválida de todas formas)."}, {"line": 213, "html": "Lee las banderas."}, {"line": 222, "html": "El bit 1 dice que hay testigos: se lee una pila de testigo por cada entrada."}, {"line": 229, "html": "Defensa anti-maleabilidad: no se permite el formato extendido si todos los testigos están vacíos (habría dos codificaciones de lo mismo)."}, {"line": 235, "html": "Banderas desconocidas: error. Reservado para futuras ampliaciones."}, {"line": 237, "html": "Por último, nLockTime."}]</script></figure>
+<div class="game" data-game="txdecoder"></div>
+
+<h2>El identificador: txid y wtxid</h2>
+<figure class="cref" id="c6" data-start="81" data-file="src/primitives/transaction.cpp"><figcaption><span class="cref-file">src/primitives/transaction.cpp</span><span class="cref-lines">líneas 81–92</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/primitives/transaction.cpp#L81-L92" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/primitives/transaction.cpp&amp;l=81" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">Txid CTransaction::ComputeHash() const
+{
+    return Txid::FromUint256((HashWriter{} &lt;&lt; TX_NO_WITNESS(*this)).GetHash());
+}
+
+Wtxid CTransaction::ComputeWitnessHash() const
+{
+    if (!HasWitness()) {
+        return Wtxid::FromUint256(hash.ToUint256());
+    }
+
+    return Wtxid::FromUint256((HashWriter{} &lt;&lt; TX_WITH_WITNESS(*this)).GetHash());</code></pre><script type="application/json" class="cref-notes">[{"line": 83, "html": "El <b>txid<\/b> es el doble SHA-256 de la transacción <b>sin testigos<\/b>. Así, quien retransmite una transacción no puede cambiar su txid tocando las firmas (que van en el testigo). Esto arregló la «maleabilidad» y permitió Lightning."}, {"line": 88, "html": "Si no hay testigos, wtxid = txid."}, {"line": 92, "html": "El <b>wtxid<\/b> incluye los testigos. Se usa para retransmitir y para el compromiso de testigos del bloque."}]</script></figure>
+<figure class="cref" id="c7" data-start="132" data-file="src/consensus/validation.h"><figcaption><span class="cref-file">src/consensus/validation.h</span><span class="cref-lines">líneas 132–135</span><span class="cref-title">el «peso» (BIP141)</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/consensus/validation.h#L132-L135" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/consensus/validation.h&amp;l=132" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static inline int32_t GetTransactionWeight(const CTransaction&amp; tx)
+{
+    return ::GetSerializeSize(TX_NO_WITNESS(tx)) * (WITNESS_SCALE_FACTOR - 1) + ::GetSerializeSize(TX_WITH_WITNESS(tx));
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 134, "html": "Peso = tamaño sin testigo × 3 + tamaño total. Es decir: cada byte normal pesa 4 y cada byte de testigo pesa 1. Un bloque puede pesar como máximo 4 000 000. El «vsize» que ves en las carteras es peso / 4."}]</script></figure>
+
+<h2>Primera barrera de consenso: CheckTransaction</h2>
+<p>Esta función comprueba lo que se puede comprobar <b>mirando sólo la transacción</b>, sin saber nada de la cadena. Cada línea tiene una historia (y dos de ellas, un fallo grave real).</p>
+<figure class="cref" id="c8" data-start="11" data-file="src/consensus/tx_check.cpp"><figcaption><span class="cref-file">src/consensus/tx_check.cpp</span><span class="cref-lines">líneas 11–60</span><span class="cref-title">comprobaciones sin contexto</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/consensus/tx_check.cpp#L11-L60" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/consensus/tx_check.cpp&amp;l=11" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool CheckTransaction(const CTransaction&amp; tx, TxValidationState&amp; state)
+{
+    // Basic checks that don&#x27;t depend on any context
+    if (tx.vin.empty())
+        return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-txns-vin-empty&quot;);
+    if (tx.vout.empty())
+        return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-txns-vout-empty&quot;);
+    // Size limits (this doesn&#x27;t take the witness into account, as that hasn&#x27;t been checked for malleability)
+    if (::GetSerializeSize(TX_NO_WITNESS(tx)) * WITNESS_SCALE_FACTOR &gt; MAX_BLOCK_WEIGHT) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-txns-oversize&quot;);
+    }
+
+    // Check for negative or overflow output values (see CVE-2010-5139)
+    CAmount nValueOut = 0;
+    for (const auto&amp; txout : tx.vout)
+    {
+        if (txout.nValue &lt; 0)
+            return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-txns-vout-negative&quot;);
+        if (txout.nValue &gt; MAX_MONEY)
+            return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-txns-vout-toolarge&quot;);
+        nValueOut += txout.nValue;
+        if (!MoneyRange(nValueOut))
+            return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-txns-txouttotal-toolarge&quot;);
+    }
+
+    // Check for duplicate inputs (see CVE-2018-17144)
+    // While Consensus::CheckTxInputs does check if all inputs of a tx are available, and UpdateCoins marks all inputs
+    // of a tx as spent, it does not check if the tx has duplicate inputs.
+    // Failure to run this check will result in either a crash or an inflation bug, depending on the implementation of
+    // the underlying coins database.
+    std::set&lt;COutPoint&gt; vInOutPoints;
+    for (const auto&amp; txin : tx.vin) {
+        if (!vInOutPoints.insert(txin.prevout).second)
+            return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-txns-inputs-duplicate&quot;);
+    }
+
+    if (tx.IsCoinBase())
+    {
+        if (tx.vin[0].scriptSig.size() &lt; 2 || tx.vin[0].scriptSig.size() &gt; 100)
+            return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-cb-length&quot;);
+    }
+    else
+    {
+        for (const auto&amp; txin : tx.vin)
+            if (txin.prevout.IsNull())
+                return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-txns-prevout-null&quot;);
+    }
+
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 14, "html": "Debe tener al menos una entrada…"}, {"line": 16, "html": "…y al menos una salida."}, {"line": 19, "html": "No puede ser más grande que un bloque entero (contando sin testigo, que aún no se ha validado)."}, {"line": 23, "html": "Agosto de 2010: alguien creó una transacción con dos salidas de 92 mil millones de BTC cada una. La suma se desbordó (dio la vuelta como un cuentakilómetros) y parecía pequeña. Se crearon 184 mil millones de BTC. Satoshi publicó un arreglo en horas y la cadena se reorganizó. Estas líneas son ese arreglo."}, {"line": 27, "html": "Ninguna salida negativa…"}, {"line": 29, "html": "…ni mayor que 21 millones…"}, {"line": 32, "html": "…y la <b>suma acumulada<\/b> tampoco (comprobada en cada paso, para que nunca se desborde)."}, {"line": 36, "html": "Septiembre de 2018: una optimización quitó esta comprobación en bloques. Un minero podría haber gastado <b>dos veces la misma moneda dentro de una transacción<\/b> (crash en unas versiones, inflación en otras). Se descubrió y arregló antes de que nadie lo explotara. Lección para auditores: las optimizaciones de rendimiento son peligrosas."}, {"line": 43, "html": "Mete cada moneda gastada en un conjunto; si ya estaba, está repetida."}, {"line": 47, "html": "La coinbase (primera transacción del bloque, la que paga al minero) no gasta nada…"}, {"line": 49, "html": "…y su scriptSig debe medir entre 2 y 100 bytes (ahí los mineros meten la altura del bloque y lo que quieran, como el titular del Times del génesis)."}, {"line": 55, "html": "Una transacción normal no puede tener entradas «nulas» (eso sólo lo hace la coinbase)."}]</script></figure>
+
+<h2>Segunda barrera: ¿existen las monedas y cuadran las cuentas?</h2>
+<p>Esto ya necesita el conjunto UTXO, así que se hace en <a class="srclink" href="explorador.html#f=src/consensus/tx_verify.cpp">tx_verify.cpp</a>:</p>
+<figure class="cref" id="c9" data-start="164" data-file="src/consensus/tx_verify.cpp"><figcaption><span class="cref-file">src/consensus/tx_verify.cpp</span><span class="cref-lines">líneas 164–214</span><span class="cref-title">entradas disponibles y suficientes</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/consensus/tx_verify.cpp#L164-L214" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/consensus/tx_verify.cpp&amp;l=164" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool Consensus::CheckTxInputs(const CTransaction&amp; tx, TxValidationState&amp; state, const CCoinsViewCache&amp; inputs, int nSpendHeight, CAmount&amp; txfee)
+{
+    // are the actual inputs available?
+    if (!inputs.HaveInputs(tx)) {
+        return state.Invalid(TxValidationResult::TX_MISSING_INPUTS, &quot;bad-txns-inputs-missingorspent&quot;,
+                         strprintf(&quot;%s: inputs missing/spent&quot;, __func__));
+    }
+
+    CAmount nValueIn = 0;
+    for (unsigned int i = 0; i &lt; tx.vin.size(); ++i) {
+        const COutPoint &amp;prevout = tx.vin[i].prevout;
+        const Coin&amp; coin = inputs.AccessCoin(prevout);
+        assert(!coin.IsSpent());
+
+        // If prev is coinbase, check that it&#x27;s matured
+        if (coin.IsCoinBase() &amp;&amp; nSpendHeight - coin.nHeight &lt; COINBASE_MATURITY) {
+            return state.Invalid(TxValidationResult::TX_PREMATURE_SPEND, &quot;bad-txns-premature-spend-of-coinbase&quot;,
+                strprintf(&quot;tried to spend coinbase at depth %d&quot;, nSpendHeight - coin.nHeight));
+        }
+
+        // Check for negative or overflow input values
+        nValueIn += coin.out.nValue;
+        if (!MoneyRange(coin.out.nValue) || !MoneyRange(nValueIn)) {
+            return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-txns-inputvalues-outofrange&quot;);
+        }
+    }
+
+    // `tx.GetValueOut()` won&#x27;t throw in validation paths because output-range checks run first
+    // (`bad-txns-vout-negative`, `bad-txns-vout-toolarge`, `bad-txns-txouttotal-toolarge`):
+    // * `MemPoolAccept::PreChecks`: `CheckTransaction()` is called before this method;
+    // * `Chainstate::ConnectBlock`: `CheckTransaction()` is called via `CheckBlock()` before this method.
+    const CAmount value_out = tx.GetValueOut();
+    if (nValueIn &lt; value_out) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-txns-in-belowout&quot;,
+            strprintf(&quot;value in (%s) &lt; value out (%s)&quot;, FormatMoney(nValueIn), FormatMoney(value_out)));
+    }
+
+    // Tally transaction fees
+    const CAmount txfee_aux = nValueIn - value_out;
+    if (!MoneyRange(txfee_aux)) {
+        // Unreachable, given the following preconditions:
+        // * `value_out` comes from `tx.GetValueOut()`, which throws unless `MoneyRange(value_out)` and asserts `MoneyRange(nValueOut)` on return.
+        // * `MoneyRange(nValueIn)` was enforced in the input loop.
+        // * `nValueIn &lt; value_out` was handled above, so `nValueIn &gt;= value_out` here (and `txfee_aux &gt;= 0`).
+        // Therefore `0 &lt;= txfee_aux = nValueIn - value_out &lt;= nValueIn &lt;= MAX_MONEY`.
+        return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;bad-txns-fee-outofrange&quot;);
+    }
+
+    txfee = txfee_aux;
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 167, "html": "Cada moneda que se intenta gastar debe estar en el UTXO. Si no está, o nunca existió o <b>ya se gastó<\/b>: así se impide el doble gasto."}, {"line": 179, "html": "Las monedas recién minadas no se pueden gastar hasta 100 bloques después. Si hubiera una reorganización y ese bloque desapareciera, todas las transacciones que dependieran de esas monedas desaparecerían también."}, {"line": 186, "html": "Suma de entradas, comprobando desbordamiento en cada paso (otra vez la lección de 2010)."}, {"line": 196, "html": "No puedes gastar más de lo que tienes: entradas ≥ salidas. <b>Esta línea es la que impide crear dinero de la nada<\/b> en transacciones normales."}, {"line": 202, "html": "La diferencia es la comisión. No se escribe en ningún sitio: es implícita."}]</script></figure>
+<div class="game" data-game="utxo"></div>
+
+<h2>Bloqueos de tiempo</h2>
+<p>Una transacción puede decir «no soy válida hasta la altura X o la fecha Y» (<code>nLockTime</code>, absoluto) o «hasta N bloques después de que se confirmara la moneda que gasto» (<code>nSequence</code>, relativo, BIP68).</p>
+<figure class="cref" id="c10" data-start="17" data-file="src/consensus/tx_verify.cpp"><figcaption><span class="cref-file">src/consensus/tx_verify.cpp</span><span class="cref-lines">líneas 17–37</span><span class="cref-title">¿se puede incluir ya?</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/consensus/tx_verify.cpp#L17-L37" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/consensus/tx_verify.cpp&amp;l=17" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool IsFinalTx(const CTransaction &amp;tx, int nBlockHeight, int64_t nBlockTime)
+{
+    if (tx.nLockTime == 0)
+        return true;
+    if ((int64_t)tx.nLockTime &lt; ((int64_t)tx.nLockTime &lt; LOCKTIME_THRESHOLD ? (int64_t)nBlockHeight : nBlockTime))
+        return true;
+
+    // Even if tx.nLockTime isn&#x27;t satisfied by nBlockHeight/nBlockTime, a
+    // transaction is still considered final if all inputs&#x27; nSequence ==
+    // SEQUENCE_FINAL (0xffffffff), in which case nLockTime is ignored.
+    //
+    // Because of this behavior OP_CHECKLOCKTIMEVERIFY/CheckLockTime() will
+    // also check that the spending input&#x27;s nSequence != SEQUENCE_FINAL,
+    // ensuring that an unsatisfied nLockTime value will actually cause
+    // IsFinalTx() to return false here:
+    for (const auto&amp; txin : tx.vin) {
+        if (!(txin.nSequence == CTxIn::SEQUENCE_FINAL))
+            return false;
+    }
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 19, "html": "0 = sin bloqueo."}, {"line": 21, "html": "Si nLockTime &lt; 500 000 000 se interpreta como altura de bloque; si no, como fecha UNIX. Truco de Satoshi para usar un único campo."}, {"line": 33, "html": "Aunque el tiempo no haya llegado, si todas las entradas tienen nSequence = 0xffffffff la transacción es final (el bloqueo queda desactivado)."}]</script></figure>
+
+<div class="quiz" data-title="Test del nivel 3"><script type="application/json">[
+{"q":"¿Qué identifica de forma única una moneda (UTXO)?","o":["La dirección del dueño","El txid de la transacción que la creó + el índice de salida","El número de bloque","Su valor"],"a":1,"why":"COutPoint = (hash, n)."},
+{"q":"¿Dónde está escrita la comisión de una transacción?","o":["En un campo «fee»","En ningún sitio: es entradas − salidas","En la coinbase","En el testigo"],"a":1,"why":"CheckTxInputs la calcula como nValueIn − value_out."},
+{"q":"¿Por qué el txid no incluye los testigos?","o":["Para ahorrar espacio","Para que nadie pueda cambiar el txid alterando firmas (maleabilidad)","Porque los testigos son opcionales para todos","Por compatibilidad con Windows"],"a":1,"why":"ComputeHash usa TX_NO_WITNESS."},
+{"q":"¿Qué fallo real corrige la comprobación de entradas duplicadas en CheckTransaction?","o":["CVE-2010-5139","CVE-2018-17144","CVE-2012-2459","Ninguno"],"a":1,"why":"CVE-2018-17144: posible inflación/crash al gastar la misma moneda dos veces en una transacción."},
+{"q":"Una coinbase minada en el bloque 1000, ¿desde qué altura se puede gastar?","o":["1001","1100","2016","Inmediatamente"],"a":1,"why":"nSpendHeight − 1000 ≥ 100 → altura 1100."},
+{"q":"¿Cuánto pesa un byte de testigo frente a un byte normal?","o":["Igual","1 frente a 4","4 frente a 1","No pesa nada"],"a":1,"why":"Peso = base×3 + total → byte normal 4, byte de testigo 1."}
+]</script></div>
+
+    <nav class="prevnext"><a class="prev" href="nivel-2.html"><span>← Anterior</span>Nivel 2 · Claves, firmas y direcciones</a><a class="next" href="nivel-4.html"><span>Siguiente →</span>Nivel 4 · Script: el lenguaje que bloquea las monedas</a></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+<script type="module" src="assets/diagrams.js"></script>
+</body>
+</html>

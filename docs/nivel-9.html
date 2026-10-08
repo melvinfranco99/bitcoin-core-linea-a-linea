@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nivel 9 · Mempool, política y minería · Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="nivel-9">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html">3 · Transacciones</a></li>
+<li><a href="nivel-4.html">4 · Script</a></li>
+<li><a href="nivel-5.html">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html">8 · Red P2P</a></li>
+<li><a href="nivel-9.html" class="active">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <div class="kicker">Nivel 9 · Antes de confirmarse</div>
+<h1>Mempool, política y minería</h1>
+<p class="lead">Antes de entrar en un bloque, una transacción espera en la <b>mempool</b> («piscina de memoria») de cada nodo. Qué transacciones acepta y retransmite tu nodo lo decide la <b>política</b>: reglas locales, configurables y más estrictas que el consenso. Entender esta diferencia es esencial para auditar.</p>
+
+<h2>Consenso frente a política</h2>
+<div class="grid2">
+  <div class="card"><h4><span class="badge cons">Consenso</span></h4><p>Reglas que <b>todos</b> los nodos aplican a los bloques. Si tu nodo difiere, te separas de la red. Cambiarlas requiere un soft fork.</p></div>
+  <div class="card"><h4><span class="badge pol">Política</span></h4><p>Reglas que <b>tu</b> nodo aplica a transacciones sueltas antes de aceptarlas en su mempool o retransmitirlas. Si un minero mete en un bloque una transacción «no estándar» pero válida, tu nodo acepta el bloque igualmente.</p></div>
+</div>
+<div class="analogy">El consenso es la ley: lo que es legal o ilegal. La política es el reglamento interno de tu tienda: «no aceptamos billetes de 500». Un billete de 500 sigue siendo dinero legal aunque tu tienda no lo acepte.</div>
+<p class="small muted">Lo dice la propia documentación: <a class="srclink" href="explorador.html#f=doc/policy/README.md">doc/policy/README.md</a> — «Policy is <i>not</i> applied to transactions in blocks».</p>
+
+<h2>El camino de una transacción hasta la mempool</h2>
+<pre class="mermaid">
+flowchart TD
+  R["Llega por P2P (tx) o RPC (sendrawtransaction)"] --> ATMP["AcceptToMemoryPool"]
+  ATMP --> PC["PreChecks<br/>CheckTransaction · IsStandardTx · no es coinbase<br/>¿final? ¿conflictos? ¿existen las entradas?<br/>CheckTxInputs · entradas/testigos estándar"]
+  PC --> RBF["¿Reemplaza a otra? (RBF)<br/>¿TRUC (v3)? ¿límites de clúster?"]
+  RBF --> PS["PolicyScriptChecks<br/>(scripts con banderas ESTÁNDAR, más estrictas)"]
+  PS --> CS["ConsensusScriptChecks<br/>(scripts con banderas del próximo bloque)<br/>→ guarda en la caché de firmas"]
+  CS --> F["Finalize: entra en la mempool<br/>(y se expulsan las de menor comisión si está llena)"]
+  F --> RL["Se anuncia a los pares (inv)"]
+</pre>
+<figure class="cref" id="c1" data-start="789" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 789–909</span><span class="cref-title">PreChecks: el filtro principal</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L789-L909" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=789" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool MemPoolAccept::PreChecks(ATMPArgs&amp; args, Workspace&amp; ws)
+{
+    AssertLockHeld(cs_main);
+    AssertLockHeld(m_pool.cs);
+    const CTransactionRef&amp; ptx = ws.m_ptx;
+    const CTransaction&amp; tx = *ws.m_ptx;
+    const Txid&amp; hash = ws.m_hash;
+
+    // Copy/alias what we need out of args
+    const int64_t nAcceptTime = args.m_accept_time;
+    const bool bypass_limits = args.m_bypass_limits;
+    std::vector&lt;COutPoint&gt;&amp; coins_to_uncache = args.m_coins_to_uncache;
+
+    // Alias what we need out of ws
+    TxValidationState&amp; state = ws.m_state;
+
+    if (!CheckTransaction(tx, state)) {
+        return false; // state filled in by CheckTransaction
+    }
+
+    // Coinbase is only valid in a block, not as a loose transaction
+    if (tx.IsCoinBase())
+        return state.Invalid(TxValidationResult::TX_CONSENSUS, &quot;coinbase&quot;);
+
+    // Rather not work on nonstandard transactions (unless -testnet/-regtest)
+    std::string reason;
+    if (m_pool.m_opts.require_standard &amp;&amp; !IsStandardTx(tx, m_pool.m_opts.max_datacarrier_bytes, m_pool.m_opts.permit_bare_multisig, m_pool.m_opts.dust_relay_feerate, reason)) {
+        return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
+    }
+
+    // Transactions smaller than 65 non-witness bytes are not relayed to mitigate CVE-2017-12842.
+    if (::GetSerializeSize(TX_NO_WITNESS(tx)) &lt; MIN_STANDARD_TX_NONWITNESS_SIZE)
+        return state.Invalid(TxValidationResult::TX_NOT_STANDARD, &quot;tx-size-small&quot;);
+
+    // Only accept nLockTime-using transactions that can be mined in the next
+    // block; we don&#x27;t want our mempool filled up with transactions that can&#x27;t
+    // be mined yet.
+    if (!CheckFinalTxAtTip(*Assert(m_active_chainstate.m_chain.Tip()), tx)) {
+        return state.Invalid(TxValidationResult::TX_PREMATURE_SPEND, &quot;non-final&quot;);
+    }
+
+    if (m_pool.exists(tx.GetWitnessHash())) {
+        // Exact transaction already exists in the mempool.
+        return state.Invalid(TxValidationResult::TX_CONFLICT, &quot;txn-already-in-mempool&quot;);
+    } else if (m_pool.exists(tx.GetHash())) {
+        // Transaction with the same non-witness data but different witness (same txid, different
+        // wtxid) already exists in the mempool.
+        return state.Invalid(TxValidationResult::TX_CONFLICT, &quot;txn-same-nonwitness-data-in-mempool&quot;);
+    }
+
+    // Check for conflicts with in-memory transactions
+    for (const CTxIn &amp;txin : tx.vin)
+    {
+        const CTransaction* ptxConflicting = m_pool.GetConflictTx(txin.prevout);
+        if (ptxConflicting) {
+            if (!args.m_allow_replacement) {
+                // Transaction conflicts with a mempool tx, but we&#x27;re not allowing replacements in this context.
+                return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, &quot;bip125-replacement-disallowed&quot;);
+            }
+            ws.m_conflicts.insert(ptxConflicting-&gt;GetHash());
+        }
+    }
+
+    m_view.SetBackend(m_viewmempool);
+
+    const CCoinsViewCache&amp; coins_cache = m_active_chainstate.CoinsTip();
+    // do all inputs exist?
+    for (const CTxIn&amp; txin : tx.vin) {
+        if (!coins_cache.HaveCoinInCache(txin.prevout)) {
+            coins_to_uncache.push_back(txin.prevout);
+        }
+
+        // Note: this call may add txin.prevout to the coins cache
+        // (coins_cache.cacheCoins) by way of FetchCoin(). It should be removed
+        // later (via coins_to_uncache) if this tx turns out to be invalid.
+        if (!m_view.HaveCoin(txin.prevout)) {
+            // Are inputs missing because we already have the tx?
+            for (size_t out = 0; out &lt; tx.vout.size(); out++) {
+                // Optimistically just do efficient check of cache for outputs
+                if (coins_cache.HaveCoinInCache(COutPoint(hash, out))) {
+                    return state.Invalid(TxValidationResult::TX_CONFLICT, &quot;txn-already-known&quot;);
+                }
+            }
+            // Otherwise assume this might be an orphan tx for which we just haven&#x27;t seen parents yet
+            return state.Invalid(TxValidationResult::TX_MISSING_INPUTS, &quot;bad-txns-inputs-missingorspent&quot;);
+        }
+    }
+
+    // This is const, but calls into the back end CoinsViews. The CCoinsViewDB at the bottom of the
+    // hierarchy brings the best block into scope. See CCoinsViewDB::GetBestBlock().
+    m_view.GetBestBlock();
+
+    // we have all inputs cached now, so switch back to dummy (to protect
+    // against bugs where we pull more inputs from disk that miss being added
+    // to coins_to_uncache)
+    m_view.SetBackend(m_dummy);
+
+    assert(m_active_chainstate.m_blockman.LookupBlockIndex(m_view.GetBestBlock()) == m_active_chainstate.m_chain.Tip());
+
+    // Only accept BIP68 sequence locked transactions that can be mined in the next
+    // block; we don&#x27;t want our mempool filled up with transactions that can&#x27;t
+    // be mined yet.
+    // Pass in m_view which has all of the relevant inputs cached. Note that, since m_view&#x27;s
+    // backend was removed, it no longer pulls coins from the mempool.
+    const std::optional&lt;LockPoints&gt; lock_points{CalculateLockPointsAtTip(m_active_chainstate.m_chain.Tip(), m_view, tx)};
+    if (!lock_points.has_value() || !CheckSequenceLocksAtTip(m_active_chainstate.m_chain.Tip(), *lock_points)) {
+        return state.Invalid(TxValidationResult::TX_PREMATURE_SPEND, &quot;non-BIP68-final&quot;);
+    }
+
+    // The mempool holds txs for the next block, so pass height+1 to CheckTxInputs
+    if (!Consensus::CheckTxInputs(tx, state, m_view, m_active_chainstate.m_chain.Height() + 1, ws.m_base_fees)) {
+        return false; // state filled in by CheckTxInputs
+    }
+
+    if (m_pool.m_opts.require_standard &amp;&amp; !AreInputsStandard(tx, m_view)) {
+        return state.Invalid(TxValidationResult::TX_INPUTS_NOT_STANDARD, &quot;bad-txns-nonstandard-inputs&quot;);
+    }
+
+    // Check for non-standard witnesses.
+    if (tx.HasWitness() &amp;&amp; m_pool.m_opts.require_standard &amp;&amp; !IsWitnessStandard(tx, m_view)) {
+        return state.Invalid(TxValidationResult::TX_WITNESS_MUTATED, &quot;bad-witness-nonstandard&quot;);</code></pre><script type="application/json" class="cref-notes">[{"line": 805, "html": "Primero, las mismas reglas de consenso sin contexto que en los bloques (nivel 3)."}, {"line": 810, "html": "Una coinbase sólo puede existir dentro de un bloque."}, {"line": 815, "html": "Política: ¿es «estándar»? (abajo)."}, {"line": 819, "html": "Las transacciones de menos de 65 bytes sin testigo no se retransmiten: una de 64 bytes podría confundirse con un nodo interno del árbol de Merkle y engañar a carteras ligeras (SPV)."}, {"line": 827, "html": "Sólo transacciones que se puedan minar en el próximo bloque."}, {"line": 832, "html": "Ya la tenemos."}, {"line": 839, "html": "¿Gasta una moneda que ya gasta otra transacción de la mempool? Entonces es un intento de reemplazo (RBF)."}, {"line": 855, "html": "¿Existen las monedas (en el UTXO o creadas por transacciones de la mempool)? Si no, puede ser una «huérfana» cuyo padre aún no ha llegado."}, {"line": 895, "html": "Bloqueos relativos cumplidos."}, {"line": 899, "html": "Las cuentas cuadran (consenso)."}, {"line": 904, "html": "Política: las entradas gastan tipos de script estándar."}, {"line": 909, "html": "Política: testigos de tamaño razonable."}]</script></figure>
+
+<h2>¿Qué es una transacción «estándar»?</h2>
+<figure class="cref" id="c2" data-start="99" data-file="src/policy/policy.cpp"><figcaption><span class="cref-file">src/policy/policy.cpp</span><span class="cref-lines">líneas 99–164</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/policy/policy.cpp#L99-L164" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/policy/policy.cpp&amp;l=99" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool IsStandardTx(const CTransaction&amp; tx, const std::optional&lt;unsigned&gt;&amp; max_datacarrier_bytes, bool permit_bare_multisig, const CFeeRate&amp; dust_relay_fee, std::string&amp; reason)
+{
+    if (tx.version &gt; TX_MAX_STANDARD_VERSION || tx.version &lt; TX_MIN_STANDARD_VERSION) {
+        reason = &quot;version&quot;;
+        return false;
+    }
+
+    // Extremely large transactions with lots of inputs can cost the network
+    // almost as much to process as they cost the sender in fees, because
+    // computing signature hashes is O(ninputs*txsize). Limiting transactions
+    // to MAX_STANDARD_TX_WEIGHT mitigates CPU exhaustion attacks.
+    unsigned int sz = GetTransactionWeight(tx);
+    if (sz &gt; MAX_STANDARD_TX_WEIGHT) {
+        reason = &quot;tx-size&quot;;
+        return false;
+    }
+
+    for (const CTxIn&amp; txin : tx.vin)
+    {
+        // Biggest &#x27;standard&#x27; txin involving only keys is a 15-of-15 P2SH
+        // multisig with compressed keys (remember the MAX_SCRIPT_ELEMENT_SIZE byte limit on
+        // redeemScript size). That works out to a (15*(33+1))+3=513 byte
+        // redeemScript, 513+1+15*(73+1)+3=1627 bytes of scriptSig, which
+        // we round off to 1650(MAX_STANDARD_SCRIPTSIG_SIZE) bytes for
+        // some minor future-proofing. That&#x27;s also enough to spend a
+        // 20-of-20 CHECKMULTISIG scriptPubKey, though such a scriptPubKey
+        // is not considered standard.
+        if (txin.scriptSig.size() &gt; MAX_STANDARD_SCRIPTSIG_SIZE) {
+            reason = &quot;scriptsig-size&quot;;
+            return false;
+        }
+        if (!txin.scriptSig.IsPushOnly()) {
+            reason = &quot;scriptsig-not-pushonly&quot;;
+            return false;
+        }
+    }
+
+    unsigned int datacarrier_bytes_left = max_datacarrier_bytes.value_or(0);
+    TxoutType whichType;
+    for (const CTxOut&amp; txout : tx.vout) {
+        if (!::IsStandard(txout.scriptPubKey, whichType)) {
+            reason = &quot;scriptpubkey&quot;;
+            return false;
+        }
+
+        if (whichType == TxoutType::NULL_DATA) {
+            unsigned int size = txout.scriptPubKey.size();
+            if (size &gt; datacarrier_bytes_left) {
+                reason = &quot;datacarrier&quot;;
+                return false;
+            }
+            datacarrier_bytes_left -= size;
+        } else if ((whichType == TxoutType::MULTISIG) &amp;&amp; (!permit_bare_multisig)) {
+            reason = &quot;bare-multisig&quot;;
+            return false;
+        }
+    }
+
+    // Only MAX_DUST_OUTPUTS_PER_TX dust is permitted(on otherwise valid ephemeral dust)
+    if (GetDust(tx, dust_relay_fee).size() &gt; MAX_DUST_OUTPUTS_PER_TX) {
+        reason = &quot;dust&quot;;
+        return false;
+    }
+
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 101, "html": "Versiones 1, 2 o 3. Otras versiones están reservadas para futuros usos."}, {"line": 111, "html": "Máximo 400 000 de peso (100 kvB): una transacción enorme podría costar a la red más CPU que lo que paga."}, {"line": 126, "html": "scriptSig de hasta 1650 bytes (el comentario explica el cálculo: una multifirma P2SH 15-de-15)."}, {"line": 130, "html": "El scriptSig sólo puede contener datos (evita maleabilidad)."}, {"line": 139, "html": "Cada salida debe ser de un tipo conocido (P2PKH, P2SH, P2WPKH, P2WSH, P2TR, OP_RETURN…). Las versiones futuras de testigo no se retransmiten: así un soft fork futuro no puede robar a nadie que las haya usado por error."}, {"line": 144, "html": "Salidas OP_RETURN (datos): limitadas por <code>-datacarriersize<\/code>."}, {"line": 158, "html": "Como mucho una salida de «polvo»."}]</script></figure>
+<figure class="cref" id="c3" data-start="26" data-file="src/policy/policy.cpp"><figcaption><span class="cref-file">src/policy/policy.cpp</span><span class="cref-lines">líneas 26–63</span><span class="cref-title">¿qué es «polvo» (dust)?</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/policy/policy.cpp#L26-L63" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/policy/policy.cpp&amp;l=26" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">CAmount GetDustThreshold(const CTxOut&amp; txout, const CFeeRate&amp; dustRelayFeeIn)
+{
+    // &quot;Dust&quot; is defined in terms of dustRelayFee,
+    // which has units satoshis-per-kilobyte.
+    // If you&#x27;d pay more in fees than the value of the output
+    // to spend something, then we consider it dust.
+    // A typical spendable non-segwit txout is 34 bytes big, and will
+    // need a CTxIn of at least 148 bytes to spend:
+    // so dust is a spendable txout less than
+    // 182*dustRelayFee/1000 (in satoshis).
+    // 546 satoshis at the default rate of 3000 sat/kvB.
+    // A typical spendable segwit P2WPKH txout is 31 bytes big, and will
+    // need a CTxIn of at least 67 bytes to spend:
+    // so dust is a spendable txout less than
+    // 98*dustRelayFee/1000 (in satoshis).
+    // 294 satoshis at the default rate of 3000 sat/kvB.
+    if (txout.scriptPubKey.IsUnspendable())
+        return 0;
+
+    uint64_t nSize{GetSerializeSize(txout)};
+    int witnessversion = 0;
+    std::vector&lt;unsigned char&gt; witnessprogram;
+
+    // Note this computation is for spending a Segwit v0 P2WPKH output (a 33 bytes
+    // public key + an ECDSA signature). For Segwit v1 Taproot outputs the minimum
+    // satisfaction is lower (a single BIP340 signature) but this computation was
+    // kept to not further reduce the dust level.
+    // See discussion in https://github.com/bitcoin/bitcoin/pull/22779 for details.
+    if (txout.scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
+        // sum the sizes of the parts of a transaction input
+        // with 75% segwit discount applied to the script size.
+        nSize += (32 + 4 + 1 + (107 / WITNESS_SCALE_FACTOR) + 4);
+    } else {
+        nSize += (32 + 4 + 1 + 107 + 4); // the 148 mentioned above
+    }
+
+    return dustRelayFeeIn.GetFee(nSize);
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 30, "html": "Polvo = una salida tan pequeña que costaría más en comisiones gastarla que lo que vale. Llenaría el UTXO para siempre."}, {"line": 36, "html": "Umbral típico: 546 sats para P2PKH…"}, {"line": 41, "html": "…y 294 sats para P2WPKH."}, {"line": 62, "html": "Tamaño de la salida + tamaño de la entrada que la gastaría, multiplicado por la tasa <code>-dustrelayfee<\/code>."}]</script></figure>
+
+<h3>Todas las constantes de política</h3>
+<p>Generado desde <code>src/policy/policy.h</code>. Casi todas se pueden cambiar con opciones de configuración.</p>
+<div class="table-wrap tall"><div class="table-wrap"><table class="data compact"><thead><tr><th>Constante</th><th>Valor</th><th>Comentario original</th></tr></thead><tbody>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=24"><code>DEFAULT_BLOCK_MAX_WEIGHT</code></a></td><td><code>MAX_BLOCK_WEIGHT</code></td><td class="small">Default for -blockmaxweight, which controls the range of block weights the mining code will create</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=26"><code>DEFAULT_BLOCK_RESERVED_WEIGHT</code></a></td><td><code>8000</code></td><td class="small">Default for -blockreservedweight</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=28"><code>DEFAULT_COINBASE_OUTPUT_MAX_ADDITIONAL_SIGOPS</code></a></td><td><code>400</code></td><td class="small">Default sigops cost to reserve for coinbase transaction outputs when creating block templates.</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=33"><code>MINIMUM_BLOCK_RESERVED_WEIGHT</code></a></td><td><code>2000</code></td><td class="small"></td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=35"><code>DEFAULT_BLOCK_MIN_TX_FEE</code></a></td><td><code>1</code></td><td class="small">Default for -blockmintxfee, which sets the minimum feerate for a transaction in blocks created by mining code</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=37"><code>MAX_STANDARD_TX_WEIGHT</code></a></td><td><code>400000</code></td><td class="small">The maximum weight for transactions we&#x27;re willing to relay/mine</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=39"><code>MIN_STANDARD_TX_NONWITNESS_SIZE</code></a></td><td><code>65</code></td><td class="small">The minimum non-witness size for transactions we&#x27;re willing to relay/mine: one larger than 64</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=41"><code>MAX_P2SH_SIGOPS</code></a></td><td><code>15</code></td><td class="small">Maximum number of signature check operations in an IsStandard() P2SH script</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=43"><code>MAX_STANDARD_TX_SIGOPS_COST</code></a></td><td><code>MAX_BLOCK_SIGOPS_COST/5</code></td><td class="small">The maximum number of sigops we&#x27;re willing to relay/mine in a single tx</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=45"><code>MAX_TX_LEGACY_SIGOPS</code></a></td><td><code>2&#x27;500</code></td><td class="small">The maximum number of potentially executed legacy signature operations in a single standard tx</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=47"><code>DEFAULT_INCREMENTAL_RELAY_FEE</code></a></td><td><code>100</code></td><td class="small">Default for -incrementalrelayfee, which sets the minimum feerate increase for mempool limiting or replacement</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=49"><code>DEFAULT_BYTES_PER_SIGOP</code></a></td><td><code>20</code></td><td class="small">Default for -bytespersigop</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=51"><code>DEFAULT_PERMIT_BAREMULTISIG</code></a></td><td><code>true</code></td><td class="small">Default for -permitbaremultisig</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=53"><code>MAX_STANDARD_P2WSH_STACK_ITEMS</code></a></td><td><code>100</code></td><td class="small">The maximum number of witness stack items in a standard P2WSH script</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=55"><code>MAX_STANDARD_P2WSH_STACK_ITEM_SIZE</code></a></td><td><code>80</code></td><td class="small">The maximum size in bytes of each witness stack item in a standard P2WSH script</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=57"><code>MAX_STANDARD_TAPSCRIPT_STACK_ITEM_SIZE</code></a></td><td><code>80</code></td><td class="small">The maximum size in bytes of each witness stack item in a standard BIP 342 script (Taproot, leaf version 0xc0)</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=59"><code>MAX_STANDARD_P2WSH_SCRIPT_SIZE</code></a></td><td><code>3600</code></td><td class="small">The maximum size in bytes of a standard witnessScript</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=61"><code>MAX_STANDARD_SCRIPTSIG_SIZE</code></a></td><td><code>1650</code></td><td class="small">The maximum size of a standard ScriptSig</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=67"><code>DUST_RELAY_TX_FEE</code></a></td><td><code>3000</code></td><td class="small"></td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=69"><code>DEFAULT_MIN_RELAY_TX_FEE</code></a></td><td><code>100</code></td><td class="small">Default for -minrelaytxfee, minimum relay fee for transactions</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=71"><code>DEFAULT_CLUSTER_LIMIT</code></a></td><td><code>64</code></td><td class="small">Maximum number of transactions per cluster (default)</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=73"><code>DEFAULT_CLUSTER_SIZE_LIMIT_KVB</code></a></td><td><code>101</code></td><td class="small">Maximum size of cluster in virtual kilobytes</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=75"><code>DEFAULT_ANCESTOR_LIMIT</code></a></td><td><code>25</code></td><td class="small">Default for -limitancestorcount, max number of in-mempool ancestors</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=77"><code>DEFAULT_DESCENDANT_LIMIT</code></a></td><td><code>25</code></td><td class="small">Default for -limitdescendantcount, max number of in-mempool descendants</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=79"><code>DEFAULT_ACCEPT_DATACARRIER</code></a></td><td><code>true</code></td><td class="small">Default for -datacarrier</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=83"><code>MAX_OP_RETURN_RELAY</code></a></td><td><code>MAX_STANDARD_TX_WEIGHT / WITNESS_SCALE_FACTOR</code></td><td class="small"></td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=89"><code>EXTRA_DESCENDANT_TX_SIZE_LIMIT</code></a></td><td><code>10000</code></td><td class="small"></td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=94"><code>MAX_DUST_OUTPUTS_PER_TX</code></a></td><td><code>1</code></td><td class="small"></td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=134"><code>STANDARD_NOT_MANDATORY_VERIFY_FLAGS</code></a></td><td><code>STANDARD_SCRIPT_VERIFY_FLAGS &amp; ~MANDATORY_SCRIPT_VERIFY_FLAGS</code></td><td class="small">For convenience, standard but not mandatory verify flags.</td></tr>
+<tr><td><a href="explorador.html#f=src/policy/policy.h&amp;l=137"><code>STANDARD_LOCKTIME_VERIFY_FLAGS</code></a></td><td><code>LOCKTIME_VERIFY_SEQUENCE</code></td><td class="small">Used as the flags parameter to sequence and nLocktime checks in non-consensus code.</td></tr>
+</tbody></table></div></div>
+
+<h2>Reemplazar transacciones (RBF)</h2>
+<p>Si tu transacción se queda atascada con poca comisión, puedes enviar otra que gaste las mismas monedas pagando más. Reglas principales (<a class="srclink" href="explorador.html#f=src/policy/rbf.cpp">policy/rbf.cpp</a>, <a class="srclink" href="explorador.html#f=doc/policy/mempool-replacements.md">doc/policy/mempool-replacements.md</a>):</p>
+<ol class="steps">
+  <li>La nueva debe pagar <b>más comisión total</b> que todas las que reemplaza juntas…</li>
+  <li>…y además cubrir su propio ancho de banda: un extra de al menos <code>-incrementalrelayfee</code> × su tamaño.</li>
+  <li>El diagrama de tasas de comisión de la mempool debe <b>mejorar</b> (con la mempool por clústeres de v31, se compara de forma más precisa).</li>
+  <li>No puede expulsar demasiadas transacciones de golpe.</li>
+</ol>
+<p>Desde la v28 todas las transacciones son reemplazables por defecto («full RBF»): era la realidad de la red de todos modos.</p>
+
+<h2>La mempool por clústeres (v31)</h2>
+<p>Las transacciones de la mempool forman grupos conectados («clústeres»): padres, hijos, nietos… <a class="srclink" href="explorador.html#f=src/txgraph.cpp">txgraph.cpp</a> mantiene esos grupos y <a class="srclink" href="explorador.html#f=src/cluster_linearize.h">cluster_linearize.h</a> calcula el <b>orden óptimo</b> de cada uno, partido en «trozos» (chunks) de tasa de comisión decreciente. Ese mismo orden sirve para tres cosas: elegir qué entra en el bloque, qué se expulsa si la mempool está llena y si un reemplazo mejora las cosas. Límites: <code>DEFAULT_CLUSTER_LIMIT</code> = 64 transacciones y 101 kvB por clúster.</p>
+<div class="callout info"><span class="t">CPFP: el hijo paga por el padre</span><p>Si una transacción paga poca comisión, el receptor puede gastar su salida con una transacción hija de comisión alta. El minero, que ordena por trozos, incluye a ambas juntas porque <b>como paquete</b> le compensan. Pruébalo en el juego de abajo con D y E.</p></div>
+
+<h2>Construir un bloque: BlockAssembler</h2>
+<figure class="cref" id="c4" data-start="279" data-file="src/node/miner.cpp"><figcaption><span class="cref-file">src/node/miner.cpp</span><span class="cref-lines">líneas 279–334</span><span class="cref-title">llenar la plantilla</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/node/miner.cpp#L279-L334" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/node/miner.cpp&amp;l=279" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">void BlockAssembler::addChunks()
+{
+    // Limit the number of attempts to add transactions to the block when it is
+    // close to full; this is just a simple heuristic to finish quickly if the
+    // mempool has a lot of entries.
+    const int64_t MAX_CONSECUTIVE_FAILURES = 1000;
+    constexpr int32_t BLOCK_FULL_ENOUGH_WEIGHT_DELTA = 4000;
+    int64_t nConsecutiveFailed = 0;
+
+    std::vector&lt;CTxMemPoolEntry::CTxMemPoolEntryRef&gt; selected_transactions;
+    selected_transactions.reserve(MAX_CLUSTER_COUNT_LIMIT);
+    FeePerWeight chunk_feerate;
+
+    // This fills selected_transactions
+    chunk_feerate = m_mempool-&gt;GetBlockBuilderChunk(selected_transactions);
+    FeePerVSize chunk_feerate_vsize = ToFeePerVSize(chunk_feerate);
+
+    while (selected_transactions.size() &gt; 0) {
+        // Check to see if min fee rate is still respected.
+        if (chunk_feerate_vsize &lt;&lt; m_options.blockMinFeeRate.GetFeePerVSize()) {
+            // Everything else we might consider has a lower feerate
+            return;
+        }
+
+        int64_t chunk_sig_ops = 0;
+        for (const auto&amp; tx : selected_transactions) {
+            chunk_sig_ops += tx.get().GetSigOpCost();
+        }
+
+        // Check to see if this chunk will fit.
+        if (!TestChunkBlockLimits(chunk_feerate, chunk_sig_ops) || !TestChunkTransactions(selected_transactions)) {
+            // This chunk won&#x27;t fit, so we skip it and will try the next best one.
+            m_mempool-&gt;SkipBuilderChunk();
+            ++nConsecutiveFailed;
+
+            if (nConsecutiveFailed &gt; MAX_CONSECUTIVE_FAILURES &amp;&amp; nBlockWeight +
+                    BLOCK_FULL_ENOUGH_WEIGHT_DELTA &gt; m_options.nBlockMaxWeight) {
+                // Give up if we&#x27;re close to full and haven&#x27;t succeeded in a while
+                return;
+            }
+        } else {
+            m_mempool-&gt;IncludeBuilderChunk();
+
+            // This chunk will fit, so add it to the block.
+            nConsecutiveFailed = 0;
+            for (const auto&amp; tx : selected_transactions) {
+                AddToBlock(tx);
+            }
+            pblocktemplate-&gt;m_package_feerates.emplace_back(chunk_feerate_vsize);
+        }
+
+        selected_transactions.clear();
+        chunk_feerate = m_mempool-&gt;GetBlockBuilderChunk(selected_transactions);
+        chunk_feerate_vsize = ToFeePerVSize(chunk_feerate);
+    }
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 293, "html": "Pide a la mempool el siguiente mejor trozo (el de mayor tasa de comisión de entre todos los clústeres)."}, {"line": 298, "html": "Si ya no paga ni la tasa mínima, se para: todo lo que queda paga menos."}, {"line": 309, "html": "¿Cabe en peso y en sigops? ¿Son finales sus transacciones?"}, {"line": 311, "html": "Si no cabe, se salta y se prueba el siguiente."}, {"line": 314, "html": "Heurística: si el bloque está casi lleno y llevamos 1000 fallos seguidos, se termina."}, {"line": 320, "html": "Si cabe, entra entero."}]</script></figure>
+<div class="game" data-game="blocktemplate"></div>
+<div class="callout"><span class="t">Para auditar</span><p>Un fallo en la política normalmente no rompe el consenso, pero puede permitir ataques de denegación de servicio (llenar tu memoria o tu CPU) o «pinning» (impedir que tu transacción se confirme). Las reglas de mempool son las que más cambian entre versiones: compara siempre <code>git diff vA..vB -- src/policy src/txmempool.cpp</code>.</p></div>
+
+<div class="quiz" data-title="Test del nivel 9"><script type="application/json">[
+{"q":"Un minero incluye en un bloque una transacción NO estándar pero válida por consenso. ¿Qué hace tu nodo?","o":["Rechaza el bloque","Acepta el bloque: la política no se aplica a los bloques","Expulsa al minero","Se cuelga"],"a":1,"why":"La política sólo filtra transacciones sueltas."},
+{"q":"¿Por qué no se retransmiten transacciones de menos de 65 bytes (sin testigo)?","o":["Ocupan poco","CVE-2017-12842: una de 64 bytes podría hacerse pasar por un nodo del árbol de Merkle","No pagan comisión","Son coinbase"],"a":1,"why":"Comentario en PreChecks."},
+{"q":"¿Qué es «polvo»?","o":["Transacciones viejas","Una salida que costaría más en comisiones gastar que lo que vale","Bloques vacíos","Monedas perdidas"],"a":1,"why":"GetDustThreshold."},
+{"q":"¿Qué permite CPFP?","o":["Que el hijo con comisión alta «arrastre» a un padre de comisión baja al bloque","Cancelar transacciones","Duplicar monedas","Saltarse la mempool"],"a":0,"why":"El minero evalúa paquetes/trozos por tasa conjunta."},
+{"q":"¿Por qué no se retransmiten salidas a versiones de testigo futuras?","o":["Por capricho","Para proteger a usuarios: un soft fork futuro podría dar reglas a esas salidas","Porque son inválidas","Por tamaño"],"a":1,"why":"IsStandard: tipos desconocidos no son estándar."}
+]</script></div>
+
+    <nav class="prevnext"><a class="prev" href="nivel-8.html"><span>← Anterior</span>Nivel 8 · La red P2P</a><a class="next" href="nivel-10.html"><span>Siguiente →</span>Nivel 10 · Cómo cambian las reglas: soft forks y despliegues</a></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+<script type="module" src="assets/diagrams.js"></script>
+</body>
+</html>

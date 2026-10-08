@@ -1,0 +1,100 @@
+<div class="kicker">Nivel 12 · El programa completo</div>
+<h1>Arranque, RPC, interfaces y utilidades</h1>
+<p class="lead">Ya conoces todas las piezas. Este nivel muestra cómo se ensamblan: qué pasa desde que escribes <code>bitcoind</code> hasta que el nodo está sincronizando, qué hilos corren a la vez, cómo se protegen los datos compartidos y cómo le das órdenes al nodo.</p>
+
+<h2>De main() a nodo funcionando</h2>
+<p>En el <a href="nivel-0.html">nivel 0</a> viste <code>main()</code>. Llama a <code>AppInit</code>:</p>
+<code-ref file="src/bitcoind.cpp" fn="AppInit" title="AppInit (bitcoind)">
+  <n m="args.SoftSetBoolArg(&quot;-server&quot;, true);">bitcoind siempre acepta órdenes RPC (la GUI no, por defecto).</n>
+  <n m="InitLogging(args);">Prepara el registro (<code>debug.log</code>).</n>
+  <n m="if (!AppInitBasicSetup(args, node.exit_status)) {">Paso 1: configuración básica del sistema.</n>
+  <n m="if (!AppInitParameterInteraction(args)) {">Pasos 2–3: comprobar que las opciones son coherentes entre sí.</n>
+  <n m="node.kernel = std::make_unique<kernel::Context>();">Crea el contexto del «núcleo» de validación…</n>
+  <n m="node.ecc_context = std::make_unique<ECC_Context>();">…e inicializa libsecp256k1.</n>
+</code-ref>
+<p>Y luego <code>AppInitMain</code> en <src file="src/init.cpp">init.cpp</src> ejecuta los pasos. El propio código los numera con comentarios; esta lista se ha generado buscándolos:</p>
+<auto-table kind="init-steps"/>
+<pre class="mermaid">
+flowchart TD
+  A["Pasos 1-4<br/>opciones, comprobaciones, bloqueo del directorio de datos"] --> B["Paso 6: red<br/>CConnman, PeerManager, addrman, banman"]
+  B --> C["Paso 7: cargar la cadena<br/>índice de bloques, UTXO, verificación rápida de los últimos bloques"]
+  C --> D["Paso 8: índices (txindex…)"]
+  D --> E["Paso 9: cartera"]
+  E --> F["Paso 11: importar bloques / reindex"]
+  F --> G["Paso 12: arrancar hilos de red"]
+  G --> H["Paso 13: «init message: Done loading»"]
+</pre>
+
+<h2>Los hilos del nodo</h2>
+<p>El nodo hace muchas cosas a la vez, cada una en su hilo. Puedes verlos con <code>top -H -p $(pidof bitcoind)</code>: los nombres coinciden con los del código.</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Nombre del hilo</th><th>Qué hace</th><th>Dónde se crea</th></tr></thead>
+<tbody>
+<tr><td><code>b-net</code></td><td>Lee y escribe en los sockets</td><td><src file="src/net.cpp" m="threadSocketHandler = std::thread">net.cpp</src></td></tr>
+<tr><td><code>b-msghand</code></td><td>Procesa los mensajes P2P (y por tanto valida bloques y transacciones)</td><td><src file="src/net.cpp" m="threadMessageHandler = std::thread">net.cpp</src></td></tr>
+<tr><td><code>b-opencon</code>, <code>b-addcon</code></td><td>Abre conexiones salientes</td><td><src file="src/net.cpp" m="&quot;opencon&quot;">net.cpp</src></td></tr>
+<tr><td><code>b-dnsseed</code></td><td>Consulta las semillas DNS en el primer arranque</td><td><src file="src/net.cpp" m="threadDNSAddressSeed = std::thread">net.cpp</src></td></tr>
+<tr><td><code>b-scriptch.N</code></td><td>Verifican firmas en paralelo (<code>CCheckQueue</code>)</td><td><src file="src/checkqueue.h" m="scriptch.%i">checkqueue.h</src></td></tr>
+<tr><td><code>b-scheduler</code></td><td>Tareas periódicas y notificaciones</td><td><src file="src/init.cpp" m="&quot;scheduler&quot;">init.cpp</src></td></tr>
+<tr><td><code>b-http</code>, <code>b-httpworker.N</code></td><td>Servidor RPC/REST</td><td><src file="src/httpserver.cpp" m="ThreadRename(&quot;http&quot;)">httpserver.cpp</src></td></tr>
+<tr><td><code>b-initload</code></td><td>Importación de bloques al arrancar</td><td><src file="src/init.cpp" m="&quot;initload&quot;">init.cpp</src></td></tr>
+</tbody></table></div>
+
+<h2>Candados: que dos hilos no pisen lo mismo</h2>
+<div class="analogy">Un cuaderno compartido por varias personas: sólo quien tiene el bolígrafo puede escribir. <code>cs_main</code> es el bolígrafo del estado de la cadena.</div>
+<code-ref file="src/sync.h" lines="258-258" title="la macro LOCK">
+  <n m="#define LOCK(cs)">Coge el candado <code>cs</code> hasta el final del bloque <code>{ }</code> actual. En compilaciones de depuración, además registra el orden en que se cogen los candados para detectar posibles <b>interbloqueos</b> (dos hilos esperándose mutuamente).</n>
+</code-ref>
+<p>Además, las anotaciones <code>GUARDED_BY(cs_main)</code> y <code>EXCLUSIVE_LOCKS_REQUIRED(cs_main)</code> (<src file="src/threadsafety.h">threadsafety.h</src>) permiten que el compilador Clang compruebe <b>en tiempo de compilación</b> que nadie accede a esos datos sin el candado.</p>
+
+<h2>Dar órdenes al nodo: JSON-RPC</h2>
+<pre class="mermaid">
+sequenceDiagram
+  participant U as bitcoin-cli
+  participant H as httpserver.cpp (libevent)
+  participant A as httprpc.cpp
+  participant T as rpc/server.cpp (CRPCTable)
+  participant R as rpc/blockchain.cpp
+  U->>H: POST / {"method":"getblockcount"} + usuario:contraseña
+  H->>A: HTTPReq_JSONRPC
+  A->>A: RPCAuthorized (cookie o rpcauth)
+  A->>T: execute(request)
+  T->>R: getblockcount()
+  R-->>U: 945123
+</pre>
+<code-ref file="src/httprpc.cpp" fn="CheckUserAuthorized" title="autenticación">
+  <n m="TimingResistantEqual(std::string_view(fields[0]), user)">Comparación en tiempo constante: el tiempo de respuesta no revela cuántos caracteres acertaste.</n>
+  <n m="CHMAC_SHA256(UCharCast(salt.data()), salt.size())">Con <code>-rpcauth</code>, el nodo no guarda tu contraseña, sólo un HMAC-SHA256 con sal (<src file="share/rpcauth/rpcauth.py">share/rpcauth/rpcauth.py</src> lo genera). Por defecto se usa un archivo <code>.cookie</code> aleatorio en el directorio de datos.</n>
+</code-ref>
+<code-ref file="src/rpc/blockchain.cpp" fn="getblockcount" title="un comando RPC completo">
+  <n m="&quot;getblockcount&quot;,">Nombre del comando…</n>
+  <n m="Returns the height of the most-work fully-validated chain.">…y su ayuda (lo que ves con <code>bitcoin-cli help getblockcount</code>).</n>
+  <n m="EnsureAnyChainman(request.context);">Obtiene el gestor de cadenas del contexto del nodo.</n>
+  <n m="LOCK(cs_main);">Coge el candado para leer la cadena de forma coherente…</n>
+  <n m="return chainman.ActiveChain().Height();">…y devuelve la altura de la punta. Todos los comandos RPC siguen este patrón.</n>
+</code-ref>
+<div class="callout bad"><span class="t">Seguridad del RPC</span><p>El RPC da control total sobre el nodo (y la cartera). Nunca lo expongas a Internet: por defecto sólo escucha en <code>127.0.0.1</code>. Las opciones <code>-rpcallowip</code>/<code>-rpcbind</code> deben usarse con cuidado.</p></div>
+
+<h2>Otras piezas</h2>
+<div class="grid2">
+  <div class="card"><h4>Señales de validación</h4><p><src file="src/validationinterface.cpp">validationinterface.cpp</src>: cuando se conecta un bloque o entra una tx en la mempool, se avisa a los «suscriptores» (cartera, índices, ZMQ) desde el hilo scheduler.</p></div>
+  <div class="card"><h4>Interfaces y multiproceso</h4><p><a href="explorador.html#d=src/interfaces"><code>src/interfaces/</code></a> separa nodo, cartera y GUI. Con <code>bitcoin-node</code> pueden ejecutarse en procesos distintos que hablan por IPC (<a href="explorador.html#d=src/ipc"><code>src/ipc/</code></a>, Cap'n Proto), por ejemplo para minería con Stratum v2.</p></div>
+  <div class="card"><h4>libbitcoinkernel</h4><p><a href="explorador.html#d=src/kernel"><code>src/kernel/</code></a>: el esfuerzo por aislar la validación en una biblioteca reutilizable, con API en C (<src file="src/kernel/bitcoinkernel.h">bitcoinkernel.h</src>). Para auditar es oro: delimita qué código es imprescindible.</p></div>
+  <div class="card"><h4>ZMQ y REST</h4><p>Notificaciones push (<a href="explorador.html#d=src/zmq"><code>src/zmq/</code></a>) y una API REST de sólo lectura (<src file="src/rest.cpp">rest.cpp</src>).</p></div>
+  <div class="card"><h4>Registro</h4><p><src file="src/logging.cpp">logging.cpp</src>: <code>-debug=net</code>, <code>-debug=validation</code>… para ver por dentro lo que hace el nodo.</p></div>
+  <div class="card"><h4>Utilidades</h4><p><a href="explorador.html#d=src/util"><code>src/util/</code></a>: cadenas, tiempo, archivos, comprobaciones (<code>Assert</code>, <code>Assume</code>), hilos.</p></div>
+</div>
+
+<h2>Experimento: sigue un bloque con el registro</h2>
+<pre class="shell">./build/bin/bitcoind -regtest -daemon -debug=validation -debug=net
+./build/bin/bitcoin-cli -regtest createwallet prueba
+ADDR=$(./build/bin/bitcoin-cli -regtest getnewaddress)
+./build/bin/bitcoin-cli -regtest generatetoaddress 1 $ADDR
+tail -n 30 ~/.bitcoin/regtest/debug.log     <span class="c"># verás UpdateTip, ConnectBlock, etc.</span></pre>
+
+<div class="quiz" data-title="Test del nivel 12"><script type="application/json">[
+{"q":"¿Qué protege cs_main?","o":["La cartera","El estado de la cadena (índice de bloques, cadena activa, UTXO…)","Los sockets","El RPC"],"a":1,"why":"Es el candado principal de validación."},
+{"q":"¿Qué hilo verifica firmas en paralelo?","o":["b-net","b-scriptch.N","b-http","b-dnsseed"],"a":1,"why":"CCheckQueue en checkqueue.h."},
+{"q":"¿Cómo guarda el nodo una contraseña configurada con -rpcauth?","o":["En texto plano","Como HMAC-SHA256 con sal","Cifrada con AES","No la guarda: usa cookie siempre"],"a":1,"why":"CheckUserAuthorized compara el HMAC."},
+{"q":"¿Por qué comparar contraseñas en «tiempo constante»?","o":["Es más rápido","Para no revelar información por el tiempo de respuesta","Por compatibilidad","No importa"],"a":1,"why":"TimingResistantEqual evita ataques de temporización."}
+]</script></div>

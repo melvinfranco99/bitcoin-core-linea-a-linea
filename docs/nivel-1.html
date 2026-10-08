@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nivel 1 · Bytes, hashes y serialización · Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="nivel-1">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html" class="active">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html">3 · Transacciones</a></li>
+<li><a href="nivel-4.html">4 · Script</a></li>
+<li><a href="nivel-5.html">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html">8 · Red P2P</a></li>
+<li><a href="nivel-9.html">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <div class="kicker">Nivel 1 · Fundamentos</div>
+<h1>Bytes, hashes y serialización</h1>
+<p class="lead">Todo en Bitcoin acaba siendo una secuencia de bytes que se pasa por una función hash. Si entiendes cómo se convierten los objetos en bytes (serialización) y qué hace SHA-256, entiendes la «materia prima» de todo lo demás.</p>
+
+<h2>Bytes y hexadecimal</h2>
+<p>Un <b>byte</b> son 8 bits: un número de 0 a 255. Para escribirlo usamos dos cifras <b>hexadecimales</b> (base 16: 0–9 y a–f): <code>00</code> = 0, <code>ff</code> = 255, <code>1d</code> = 29. Un hash de 32 bytes se escribe con 64 caracteres hex.</p>
+
+<h3>Little-endian: los números «al revés»</h3>
+<p>Un entero de 4 bytes como 1 se puede guardar como <code>00 00 00 01</code> (big-endian, como lo escribimos los humanos) o como <code>01 00 00 00</code> (little-endian: primero el byte menos significativo). <b>Bitcoin usa little-endian para casi todo</b> (versión, cantidades, tiempos…). Por eso el <code>nVersion = 1</code> del bloque génesis aparece en bytes como <code>01000000</code>.</p>
+<figure class="cref" id="c1" data-start="63" data-file="src/serialize.h"><figcaption><span class="cref-file">src/serialize.h</span><span class="cref-lines">líneas 63–67</span><span class="cref-title">escribir un entero de 32 bits</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/serialize.h#L63-L67" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/serialize.h&amp;l=63" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">template&lt;typename Stream&gt; inline void ser_writedata32(Stream &amp;s, uint32_t obj)
+{
+    obj = htole32_internal(obj);
+    s.write(std::as_bytes(std::span{&amp;obj, 1}));
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 65, "html": "Convierte el número a little-endian («host to little-endian 32»). En un ordenador x86 o ARM normal no hace nada, porque ya son little-endian; en uno big-endian daría la vuelta a los bytes. Así el resultado es idéntico en cualquier máquina: esto es imprescindible para el consenso."}, {"line": 66, "html": "Escribe los 4 bytes en el flujo de salida."}]</script></figure>
+
+<div class="callout bad"><span class="t">La trampa de los hashes al revés</span>
+<p>Los hashes (<code>uint256</code>) se guardan como 32 bytes en el orden en que salen de SHA-256, pero <b>se muestran dados la vuelta</b>. Por eso el hash del génesis «empieza» por ceros (<code>000000000019d6…</code>) cuando lo ves en un explorador, aunque en memoria esos ceros están al final. Es una herencia de la primera versión de Satoshi que interpretaba el hash como un número little-endian.</p></div>
+<figure class="cref" id="c2" data-start="10" data-file="src/uint256.cpp"><figcaption><span class="cref-file">src/uint256.cpp</span><span class="cref-lines">líneas 10–18</span><span class="cref-title">cómo se muestra un hash</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/uint256.cpp#L10-L18" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/uint256.cpp&amp;l=10" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">template &lt;unsigned int BITS&gt;
+std::string base_blob&lt;BITS&gt;::GetHex() const
+{
+    uint8_t m_data_rev[WIDTH];
+    for (int i = 0; i &lt; WIDTH; ++i) {
+        m_data_rev[i] = m_data[WIDTH - 1 - i];
+    }
+    return HexStr(m_data_rev);
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 13, "html": "Prepara un búfer del mismo tamaño (32 bytes para uint256)."}, {"line": 15, "html": "Copia los bytes en orden inverso: el último pasa a ser el primero."}, {"line": 17, "html": "Y lo convierte a texto hexadecimal. Esto es lo que ves en exploradores y en <code>bitcoin-cli<\/code>."}]</script></figure>
+
+<div class="game" data-game="compactsize"></div>
+
+<h2>Serialización: convertir objetos en bytes</h2>
+<p>Para enviar una transacción por la red, guardarla en disco o calcular su hash, hay que convertirla en una secuencia exacta de bytes. Todos los nodos deben hacerlo <b>exactamente igual</b>: un byte distinto daría un hash distinto. Esto vive en <a class="srclink" href="explorador.html#f=src/serialize.h">src/serialize.h</a>.</p>
+
+<h3>CompactSize: cuántos elementos vienen</h3>
+<p>Antes de una lista (entradas, salidas, bytes de un script…) se escribe su longitud con un formato de tamaño variable: los números pequeños ocupan 1 byte y los grandes hasta 9.</p>
+<figure class="cref" id="c3" data-start="298" data-file="src/serialize.h"><figcaption><span class="cref-file">src/serialize.h</span><span class="cref-lines">líneas 298–321</span><span class="cref-title">escribir una longitud</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/serialize.h#L298-L321" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/serialize.h&amp;l=298" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">template&lt;typename Stream&gt;
+void WriteCompactSize(Stream&amp; os, uint64_t nSize)
+{
+    if (nSize &lt; 253)
+    {
+        ser_writedata8(os, nSize);
+    }
+    else if (nSize &lt;= std::numeric_limits&lt;uint16_t&gt;::max())
+    {
+        ser_writedata8(os, 253);
+        ser_writedata16(os, nSize);
+    }
+    else if (nSize &lt;= std::numeric_limits&lt;unsigned int&gt;::max())
+    {
+        ser_writedata8(os, 254);
+        ser_writedata32(os, nSize);
+    }
+    else
+    {
+        ser_writedata8(os, 255);
+        ser_writedata64(os, nSize);
+    }
+    return;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 301, "html": "Si cabe en un byte y es menor que 253, se escribe tal cual. El 99 % de los casos (por ejemplo «2 entradas»)."}, {"line": 307, "html": "Si cabe en 16 bits: un byte marcador <code>0xfd<\/code> (253) seguido de 2 bytes."}, {"line": 312, "html": "Hasta 32 bits: marcador <code>0xfe<\/code> + 4 bytes."}, {"line": 317, "html": "Si no, marcador <code>0xff<\/code> + 8 bytes."}]</script></figure>
+<figure class="cref" id="c4" data-start="329" data-file="src/serialize.h"><figcaption><span class="cref-file">src/serialize.h</span><span class="cref-lines">líneas 329–360</span><span class="cref-title">leer una longitud (con defensas)</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/serialize.h#L329-L360" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/serialize.h&amp;l=329" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">template&lt;typename Stream&gt;
+uint64_t ReadCompactSize(Stream&amp; is, bool range_check = true)
+{
+    uint8_t chSize = ser_readdata8(is);
+    uint64_t nSizeRet = 0;
+    if (chSize &lt; 253)
+    {
+        nSizeRet = chSize;
+    }
+    else if (chSize == 253)
+    {
+        nSizeRet = ser_readdata16(is);
+        if (nSizeRet &lt; 253)
+            throw std::ios_base::failure(&quot;non-canonical ReadCompactSize()&quot;);
+    }
+    else if (chSize == 254)
+    {
+        nSizeRet = ser_readdata32(is);
+        if (nSizeRet &lt; 0x10000u)
+            throw std::ios_base::failure(&quot;non-canonical ReadCompactSize()&quot;);
+    }
+    else
+    {
+        nSizeRet = ser_readdata64(is);
+        if (nSizeRet &lt; 0x100000000ULL)
+            throw std::ios_base::failure(&quot;non-canonical ReadCompactSize()&quot;);
+    }
+    if (range_check &amp;&amp; nSizeRet &gt; MAX_SIZE) {
+        throw std::ios_base::failure(&quot;ReadCompactSize(): size too large&quot;);
+    }
+    return nSizeRet;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 332, "html": "Lee el primer byte para saber qué formato viene."}, {"line": 341, "html": "¡Defensa! Si alguien usa el formato largo para un número que cabía en el corto, se rechaza («non-canonical»). Así cada número tiene <b>una única<\/b> codificación válida y nadie puede cambiar los bytes (y por tanto el hash) sin cambiar el significado. Este problema se llama <i>maleabilidad<\/i>."}, {"line": 347, "html": "Lo mismo para 32 bits…"}, {"line": 353, "html": "…y para 64 bits."}, {"line": 356, "html": "Otra defensa: un atacante podría anunciar «vienen 4 000 millones de elementos» para que reservemos memoria y el nodo se caiga. <code>MAX_SIZE<\/code> = 32 MiB pone un tope."}]</script></figure>
+
+<h3>Listas y objetos</h3>
+<p>Una lista (<code>std::vector</code>) se serializa como <b>CompactSize(longitud) + cada elemento</b>. Un objeto se serializa como la concatenación de sus campos. Las clases lo declaran con la macro <code>SERIALIZE_METHODS</code>; por ejemplo, una cabecera de bloque son sus 6 campos uno detrás de otro:</p>
+<figure class="cref" id="c5" data-start="42" data-file="src/primitives/block.h"><figcaption><span class="cref-file">src/primitives/block.h</span><span class="cref-lines">líneas 42–42</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/primitives/block.h#L42" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/primitives/block.h&amp;l=42" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">    SERIALIZE_METHODS(CBlockHeader, obj) { READWRITE(obj.nVersion, obj.hashPrevBlock, obj.hashMerkleRoot, obj.nTime, obj.nBits, obj.nNonce); }</code></pre><script type="application/json" class="cref-notes">[{"line": 42, "html": "La misma línea sirve para escribir y para leer (<code>READWRITE<\/code>): versión (4 bytes), hash previo (32), raíz de Merkle (32), tiempo (4), nBits (4) y nonce (4). Total: exactamente 80 bytes."}]</script></figure>
+
+<h2>Funciones hash: huellas digitales</h2>
+<p>Una función hash toma cualquier cantidad de datos y devuelve una «huella» de tamaño fijo. SHA-256 devuelve 32 bytes. Tiene tres propiedades que sostienen todo Bitcoin:</p>
+<div class="grid2">
+  <div class="card"><h4>1. Determinista</h4><p>La misma entrada da siempre la misma huella, en cualquier ordenador.</p></div>
+  <div class="card"><h4>2. Imposible de invertir</h4><p>Viendo la huella no puedes saber la entrada, ni fabricar una entrada con una huella elegida.</p></div>
+  <div class="card"><h4>3. Sin colisiones prácticas</h4><p>Nadie ha encontrado nunca dos entradas distintas con la misma huella SHA-256.</p></div>
+</div>
+<div class="game" data-game="hasher"></div>
+
+<h3>SHA-256 por dentro</h3>
+<p>No hace falta entender la matemática para auditar Bitcoin (SHA-256 es un estándar público del NIST), pero sí conviene ver que el código es pequeño y legible. SHA-256 procesa el mensaje en trozos de 64 bytes; cada trozo pasa por 64 «rondas» que mezclan 8 variables de 32 bits.</p>
+<figure class="cref" id="c6" data-start="69" data-file="src/crypto/sha256.cpp"><figcaption><span class="cref-file">src/crypto/sha256.cpp</span><span class="cref-lines">líneas 69–82</span><span class="cref-title">las funciones de mezcla y una ronda</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/crypto/sha256.cpp#L69-L82" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/crypto/sha256.cpp&amp;l=69" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">uint32_t inline Ch(uint32_t x, uint32_t y, uint32_t z) { return z ^ (x &amp; (y ^ z)); }
+uint32_t inline Maj(uint32_t x, uint32_t y, uint32_t z) { return (x &amp; y) | (z &amp; (x | y)); }
+uint32_t inline Sigma0(uint32_t x) { return (x &gt;&gt; 2 | x &lt;&lt; 30) ^ (x &gt;&gt; 13 | x &lt;&lt; 19) ^ (x &gt;&gt; 22 | x &lt;&lt; 10); }
+uint32_t inline Sigma1(uint32_t x) { return (x &gt;&gt; 6 | x &lt;&lt; 26) ^ (x &gt;&gt; 11 | x &lt;&lt; 21) ^ (x &gt;&gt; 25 | x &lt;&lt; 7); }
+uint32_t inline sigma0(uint32_t x) { return (x &gt;&gt; 7 | x &lt;&lt; 25) ^ (x &gt;&gt; 18 | x &lt;&lt; 14) ^ (x &gt;&gt; 3); }
+uint32_t inline sigma1(uint32_t x) { return (x &gt;&gt; 17 | x &lt;&lt; 15) ^ (x &gt;&gt; 19 | x &lt;&lt; 13) ^ (x &gt;&gt; 10); }
+
+/** One round of SHA-256. */
+void inline Round(uint32_t a, uint32_t b, uint32_t c, uint32_t&amp; d, uint32_t e, uint32_t f, uint32_t g, uint32_t&amp; h, uint32_t k)
+{
+    uint32_t t1 = h + Sigma1(e) + Ch(e, f, g) + k;
+    uint32_t t2 = Sigma0(a) + Maj(a, b, c);
+    d += t1;
+    h = t1 + t2;</code></pre><script type="application/json" class="cref-notes">[{"line": 69, "html": "«Choose»: para cada bit, si x es 1 elige y; si es 0 elige z."}, {"line": 70, "html": "«Majority»: para cada bit, el valor que tengan al menos dos de los tres."}, {"line": 71, "html": "Rotaciones de bits combinadas con XOR. <code>x &gt;&gt; 2 | x &lt;&lt; 30<\/code> es «rotar 2 posiciones a la derecha»."}, {"line": 77, "html": "Una ronda: calcula dos temporales y actualiza dos de las ocho variables. <code>Transform<\/code> llama a esta función 64 veces por bloque de 64 bytes, con las constantes <code>0x428a2f98<\/code>… del estándar."}]</script></figure>
+<figure class="cref" id="c7" data-start="86" data-file="src/crypto/sha256.cpp"><figcaption><span class="cref-file">src/crypto/sha256.cpp</span><span class="cref-lines">líneas 86–96</span><span class="cref-title">el estado inicial</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/crypto/sha256.cpp#L86-L96" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/crypto/sha256.cpp&amp;l=86" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">void inline Initialize(uint32_t* s)
+{
+    s[0] = 0x6a09e667ul;
+    s[1] = 0xbb67ae85ul;
+    s[2] = 0x3c6ef372ul;
+    s[3] = 0xa54ff53aul;
+    s[4] = 0x510e527ful;
+    s[5] = 0x9b05688cul;
+    s[6] = 0x1f83d9abul;
+    s[7] = 0x5be0cd19ul;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 88, "html": "Estos 8 números son los primeros 32 bits de la parte fraccionaria de las raíces cuadradas de los 8 primeros primos (2, 3, 5…). Son públicos y fijos: nadie los eligió «a dedo» (son «números sin nada en la manga»)."}]</script></figure>
+<figure class="cref" id="c8" data-start="725" data-file="src/crypto/sha256.cpp"><figcaption><span class="cref-file">src/crypto/sha256.cpp</span><span class="cref-lines">líneas 725–740</span><span class="cref-title">el relleno final</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/crypto/sha256.cpp#L725-L740" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/crypto/sha256.cpp&amp;l=725" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">void CSHA256::Finalize(unsigned char hash[OUTPUT_SIZE])
+{
+    static const unsigned char pad[64] = {0x80};
+    unsigned char sizedesc[8];
+    WriteBE64(sizedesc, bytes &lt;&lt; 3);
+    Write(pad, 1 + ((119 - (bytes % 64)) % 64));
+    Write(sizedesc, 8);
+    WriteBE32(hash, s[0]);
+    WriteBE32(hash + 4, s[1]);
+    WriteBE32(hash + 8, s[2]);
+    WriteBE32(hash + 12, s[3]);
+    WriteBE32(hash + 16, s[4]);
+    WriteBE32(hash + 20, s[5]);
+    WriteBE32(hash + 24, s[6]);
+    WriteBE32(hash + 28, s[7]);
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 727, "html": "El relleno empieza por un bit 1 (<code>0x80<\/code>) seguido de ceros…"}, {"line": 730, "html": "…tantos como hagan falta para que, tras añadir 8 bytes de longitud, el total sea múltiplo de 64."}, {"line": 731, "html": "Se añade la longitud del mensaje en bits (big-endian)."}, {"line": 732, "html": "El resultado son las 8 variables de estado escritas en big-endian: 32 bytes."}]</script></figure>
+<p class="small muted">En <a class="srclink" href="explorador.html#f=src/crypto/sha256.cpp&amp;l=585">SHA256AutoDetect</a> el nodo detecta si tu procesador tiene instrucciones especiales (SSE4, AVX2, SHA-NI, ARM) y usa una versión acelerada. Todas deben dar el mismo resultado; las pruebas (<code>src/test/crypto_tests.cpp</code>) lo comprueban.</p>
+
+<h3>Los hashes que usa Bitcoin</h3>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Nombre</th><th>Qué es</th><th>Para qué se usa</th></tr></thead>
+<tbody>
+<tr><td><b>SHA256d</b> (<code>CHash256</code>, <code>Hash()</code>)</td><td>SHA-256 aplicado dos veces</td><td>ID de bloques y transacciones, árbol de Merkle, checksum de mensajes P2P</td></tr>
+<tr><td><b>HASH160</b> (<code>CHash160</code>)</td><td>RIPEMD-160(SHA-256(x)): 20 bytes</td><td>Direcciones antiguas y SegWit v0 (hash de la clave pública)</td></tr>
+<tr><td><b>Tagged hash</b> (<code>TaggedHash</code>)</td><td>SHA-256(SHA-256(etiqueta) ‖ SHA-256(etiqueta) ‖ datos)</td><td>Taproot y Schnorr (BIP340/341): cada uso tiene su «etiqueta» para que un hash de un contexto nunca sirva en otro</td></tr>
+<tr><td><b>SipHash</b></td><td>Hash rápido con clave secreta</td><td>Tablas internas resistentes a ataques, IDs cortos de compact blocks</td></tr>
+</tbody></table></div>
+<figure class="cref" id="c9" data-start="24" data-file="src/hash.h"><figcaption><span class="cref-file">src/hash.h</span><span class="cref-lines">líneas 24–46</span><span class="cref-title">doble SHA-256</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/hash.h#L24-L46" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/hash.h&amp;l=24" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">class CHash256 {
+private:
+    CSHA256 sha;
+public:
+    static const size_t OUTPUT_SIZE = CSHA256::OUTPUT_SIZE;
+
+    void Finalize(std::span&lt;unsigned char&gt; output) {
+        assert(output.size() == OUTPUT_SIZE);
+        unsigned char buf[CSHA256::OUTPUT_SIZE];
+        sha.Finalize(buf);
+        sha.Reset().Write(buf, CSHA256::OUTPUT_SIZE).Finalize(output.data());
+    }
+
+    CHash256&amp; Write(std::span&lt;const unsigned char&gt; input) {
+        sha.Write(input.data(), input.size());
+        return *this;
+    }
+
+    CHash256&amp; Reset() {
+        sha.Reset();
+        return *this;
+    }
+};</code></pre><script type="application/json" class="cref-notes">[{"line": 33, "html": "Primera pasada: SHA-256 de los datos."}, {"line": 34, "html": "Segunda pasada: SHA-256 del resultado anterior. ¿Por qué dos veces? Satoshi lo eligió probablemente para protegerse de ataques de «extensión de longitud» que afectan a SHA-256 simple."}, {"line": 37, "html": "Puedes ir añadiendo datos poco a poco; sólo se hashea al final."}]</script></figure>
+<figure class="cref" id="c10" data-start="85" data-file="src/hash.cpp"><figcaption><span class="cref-file">src/hash.cpp</span><span class="cref-lines">líneas 85–92</span><span class="cref-title">hash etiquetado (BIP340)</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/hash.cpp#L85-L92" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/hash.cpp&amp;l=85" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">HashWriter TaggedHash(const std::string&amp; tag)
+{
+    HashWriter writer{};
+    uint256 taghash;
+    CSHA256().Write((const unsigned char*)tag.data(), tag.size()).Finalize(taghash.begin());
+    writer &lt;&lt; taghash &lt;&lt; taghash;
+    return writer;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 89, "html": "Primero se hashea la etiqueta (p. ej. <code>\"TapLeaf\"<\/code> o <code>\"BIP0340/challenge\"<\/code>)."}, {"line": 90, "html": "Y se escribe dos veces al principio del hasher. Así, el hash de unos datos con la etiqueta «A» nunca coincidirá con el de los mismos datos con la etiqueta «B»."}]</script></figure>
+
+<div class="quiz" data-title="Test del nivel 1"><script type="application/json">[
+{"q":"¿Cómo se escribe en bytes el entero de 32 bits 1 en Bitcoin?","o":["00000001","01000000","1","ff000000"],"a":1,"why":"Little-endian: primero el byte menos significativo."},
+{"q":"¿Qué CompactSize corresponde al número 300?","o":["2c01","fd2c01","fe2c010000","012c"],"a":1,"why":"300 ≥ 253 y cabe en 16 bits: marcador 0xfd + 300 en little-endian (2c 01)."},
+{"q":"¿Por qué ReadCompactSize rechaza codificaciones «no canónicas»?","o":["Para ahorrar espacio","Para que cada valor tenga una única codificación y no se puedan alterar bytes (y hashes) sin cambiar el significado","Porque es más rápido","No las rechaza"],"a":1,"why":"Evita la maleabilidad: si dos codificaciones significaran lo mismo, un tercero podría cambiar el hash de una transacción."},
+{"q":"¿Qué es HASH160?","o":["SHA-256 dos veces","RIPEMD-160 de SHA-256","SHA-1","160 rondas de SHA-256"],"a":1,"why":"CHash160: primero SHA-256 y luego RIPEMD-160, resultado de 20 bytes."},
+{"q":"El hash del bloque génesis se ve como 000000000019d6…, pero en memoria esos ceros están…","o":["Al principio","Al final, porque los hashes se muestran dados la vuelta","No hay ceros","En otro archivo"],"a":1,"why":"uint256::GetHex invierte el orden de los bytes al mostrar."}
+]</script></div>
+
+    <nav class="prevnext"><a class="prev" href="nivel-0.html"><span>← Anterior</span>Nivel 0 · No confíes: verifica el código tú mismo</a><a class="next" href="nivel-2.html"><span>Siguiente →</span>Nivel 2 · Claves, firmas y direcciones</a></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+
+</body>
+</html>

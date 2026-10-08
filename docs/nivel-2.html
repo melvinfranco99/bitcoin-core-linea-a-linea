@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nivel 2 · Claves, firmas y direcciones · Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="nivel-2">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html" class="active">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html">3 · Transacciones</a></li>
+<li><a href="nivel-4.html">4 · Script</a></li>
+<li><a href="nivel-5.html">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html">8 · Red P2P</a></li>
+<li><a href="nivel-9.html">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <div class="kicker">Nivel 2 · Criptografía</div>
+<h1>Claves, firmas y direcciones</h1>
+<p class="lead">¿Cómo demuestras que una moneda es tuya sin enseñar tu secreto? Con una firma digital. En este nivel verás de dónde sale una clave privada, cómo se obtiene la pública, cómo se firma y verifica, y cómo nace una dirección. Sin fórmulas difíciles: con una curva de juguete que puedes tocar.</p>
+
+<h2>La idea en una frase</h2>
+<div class="analogy">Tu <b>clave privada</b> es un número secreto enorme (como elegir un grano de arena concreto entre todos los de mil millones de playas… y luego mil millones de veces más). Tu <b>clave pública</b> se obtiene «mezclando» ese número de una forma que es fácil hacer pero imposible deshacer. Una <b>firma</b> es una prueba matemática de que conoces el número secreto, ligada a un mensaje concreto, que cualquiera puede comprobar con tu clave pública.</div>
+
+<pre class="mermaid">
+flowchart TD
+  K["Clave privada k<br/>(256 bits aleatorios)"] -->|"P = k·G<br/>(fácil)"| P["Clave pública P<br/>(un punto de la curva)"]
+  P -.->|"obtener k desde P<br/>(imposible en la práctica)"| K
+  P -->|"HASH160 o tweak Taproot"| A["Dirección<br/>1… / 3… / bc1q… / bc1p…"]
+  K -->|"firmar(mensaje)"| S["Firma"]
+  S -->|"verificar(P, mensaje, firma)"| V{"¿válida?"}
+</pre>
+
+<h2>Curvas elípticas, con números pequeños</h2>
+<p>Bitcoin usa la curva <b>secp256k1</b>: los puntos (x, y) que cumplen <code>y² = x³ + 7</code>, haciendo todas las cuentas «módulo» un primo p enorme (casi 2²⁵⁶). Hay una forma de «sumar» puntos de la curva. Sumar un punto fijo G consigo mismo k veces da <code>k·G</code>. Ese es todo el truco: <b>calcular k·G es rápido; deducir k a partir de k·G es imposible</b> cuando los números son tan grandes.</p>
+<div class="game" data-game="ec"></div>
+
+<h2>¿Quién implementa esto en Bitcoin Core?</h2>
+<p>La matemática de la curva vive en <a href="explorador.html#d=src/secp256k1"><code>src/secp256k1/</code></a>, una biblioteca escrita en C especialmente para Bitcoin, muy revisada y con pruebas exhaustivas, que se incluye dentro del repositorio como «subárbol». Bitcoin Core la usa a través de dos clases sencillas: <code>CKey</code> (clave privada, <a class="srclink" href="explorador.html#f=src/key.cpp">key.cpp</a>) y <code>CPubKey</code>/<code>XOnlyPubKey</code> (clave pública, <a class="srclink" href="explorador.html#f=src/pubkey.cpp">pubkey.cpp</a>).</p>
+<div class="callout"><span class="t">Para auditar</span><p>Para el consenso <b>sólo importa la verificación</b> (<code>pubkey.cpp</code> y las funciones <code>verify</code> de libsecp256k1). Crear claves y firmar es cosa de la cartera: si tu cartera firma mal, pierdes tú, pero no rompe la red. Si la verificación aceptara firmas falsas, se rompería todo.</p></div>
+
+<h3>Crear una clave privada</h3>
+<figure class="cref" id="c1" data-start="158" data-file="src/key.cpp"><figcaption><span class="cref-file">src/key.cpp</span><span class="cref-lines">líneas 158–167</span><span class="cref-title">generar una clave nueva</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/key.cpp#L158-L167" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/key.cpp&amp;l=158" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool CKey::Check(const unsigned char *vch) {
+    return secp256k1_ec_seckey_verify(secp256k1_context_static, vch);
+}
+
+void CKey::MakeNewKey(bool fCompressedIn) {
+    MakeKeyData();
+    do {
+        GetStrongRandBytes(*keydata);
+    } while (!Check(keydata-&gt;data()));
+    fCompressed = fCompressedIn;</code></pre><script type="application/json" class="cref-notes">[{"line": 159, "html": "Una clave es válida si es un número entre 1 y n−1, donde n es el número de puntos de la curva (un poco menos de 2²⁵⁶)."}, {"line": 165, "html": "Pide 32 bytes al generador aleatorio fuerte del nodo (<a class=\"srclink\" href=\"explorador.html#f=src/random.cpp\">random.cpp<\/a>, que mezcla el sistema operativo, el procesador y otras fuentes). Esta es la línea más importante para tu seguridad: si el azar fuera predecible, te robarían."}, {"line": 166, "html": "Si por una casualidad astronómica sale un número fuera de rango, repite."}]</script></figure>
+
+<h3>Firmar (ECDSA)</h3>
+<figure class="cref" id="c2" data-start="209" data-file="src/key.cpp"><figcaption><span class="cref-file">src/key.cpp</span><span class="cref-lines">líneas 209–235</span><span class="cref-title">firma ECDSA</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/key.cpp#L209-L235" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/key.cpp&amp;l=209" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool CKey::Sign(const uint256 &amp;hash, std::vector&lt;unsigned char&gt;&amp; vchSig, bool grind, uint32_t test_case) const {
+    if (!keydata)
+        return false;
+    vchSig.resize(CPubKey::SIGNATURE_SIZE);
+    size_t nSigLen = CPubKey::SIGNATURE_SIZE;
+    unsigned char extra_entropy[32] = {0};
+    WriteLE32(extra_entropy, test_case);
+    secp256k1_ecdsa_signature sig;
+    uint32_t counter = 0;
+    int ret = secp256k1_ecdsa_sign(secp256k1_context_sign, &amp;sig, hash.begin(), UCharCast(begin()), secp256k1_nonce_function_rfc6979, (!grind &amp;&amp; test_case) ? extra_entropy : nullptr);
+
+    // Grind for low R
+    while (ret &amp;&amp; !SigHasLowR(&amp;sig) &amp;&amp; grind) {
+        WriteLE32(extra_entropy, ++counter);
+        ret = secp256k1_ecdsa_sign(secp256k1_context_sign, &amp;sig, hash.begin(), UCharCast(begin()), secp256k1_nonce_function_rfc6979, extra_entropy);
+    }
+    assert(ret);
+    secp256k1_ecdsa_signature_serialize_der(secp256k1_context_static, vchSig.data(), &amp;nSigLen, &amp;sig);
+    vchSig.resize(nSigLen);
+    // Additional verification step to prevent using a potentially corrupted signature
+    secp256k1_pubkey pk;
+    ret = secp256k1_ec_pubkey_create(secp256k1_context_sign, &amp;pk, UCharCast(begin()));
+    assert(ret);
+    ret = secp256k1_ecdsa_verify(secp256k1_context_static, &amp;sig, hash.begin(), &amp;pk);
+    assert(ret);
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 218, "html": "ECDSA necesita un número secreto de un solo uso (nonce). Si se repite o es predecible, <b>se puede calcular tu clave privada<\/b> (le pasó a Sony con la PS3). RFC6979 lo deriva de forma determinista de la clave y el mensaje: nunca se repite para mensajes distintos."}, {"line": 221, "html": "«Grinding»: prueba hasta obtener una firma cuya R sea pequeña, para que ocupe 1 byte menos (ahorra comisiones). No afecta a la seguridad."}, {"line": 226, "html": "Codifica la firma en formato DER (el estándar ASN.1 que usan las firmas ECDSA en Bitcoin)."}, {"line": 232, "html": "Paranoia sana: verifica la firma recién hecha antes de devolverla, por si un fallo de memoria o de hardware la corrompió."}]</script></figure>
+
+<h3>Verificar (lo que hace cada nodo)</h3>
+<figure class="cref" id="c3" data-start="283" data-file="src/pubkey.cpp"><figcaption><span class="cref-file">src/pubkey.cpp</span><span class="cref-lines">líneas 283–298</span><span class="cref-title">verificación ECDSA</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/pubkey.cpp#L283-L298" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/pubkey.cpp&amp;l=283" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool CPubKey::Verify(const uint256 &amp;hash, const std::vector&lt;unsigned char&gt;&amp; vchSig) const {
+    if (!IsValid())
+        return false;
+    secp256k1_pubkey pubkey;
+    secp256k1_ecdsa_signature sig;
+    if (!secp256k1_ec_pubkey_parse(secp256k1_context_static, &amp;pubkey, vch, size())) {
+        return false;
+    }
+    if (!ecdsa_signature_parse_der_lax(&amp;sig, vchSig.data(), vchSig.size())) {
+        return false;
+    }
+    /* libsecp256k1&#x27;s ECDSA verification requires lower-S signatures, which have
+     * not historically been enforced in Bitcoin, so normalize them first. */
+    secp256k1_ecdsa_signature_normalize(secp256k1_context_static, &amp;sig, &amp;sig);
+    return secp256k1_ecdsa_verify(secp256k1_context_static, &amp;sig, hash.begin(), &amp;pubkey);
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 288, "html": "Convierte los bytes de la clave pública en un punto de la curva. Si no es un punto válido, falla."}, {"line": 291, "html": "Lee la firma DER «con manga ancha»: en los primeros años se aceptaron firmas mal codificadas y siguen estando en la cadena. Las reglas estrictas (BIP66, DERSIG) se comprueban antes, en el intérprete de Script."}, {"line": 296, "html": "Toda firma ECDSA (r, s) tiene una gemela (r, n−s) igual de válida. Se normaliza a la «s baja» para que libsecp256k1 la acepte; la política del nodo (<code>LOW_S<\/code>) ya rechaza las «s altas» en la mempool para evitar maleabilidad."}, {"line": 297, "html": "La verificación matemática en sí."}]</script></figure>
+<p>Y dentro de libsecp256k1, la verificación ECDSA es esta cuenta: con u₁ = mensaje/s y u₂ = r/s, el punto <code>u₁·G + u₂·P</code> debe tener coordenada x igual a r.</p>
+<figure class="cref" id="c4" data-start="195" data-file="src/secp256k1/src/ecdsa_impl.h"><figcaption><span class="cref-file">src/secp256k1/src/ecdsa_impl.h</span><span class="cref-lines">líneas 195–264</span><span class="cref-title">el núcleo matemático (C)</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/secp256k1/src/ecdsa_impl.h#L195-L264" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/secp256k1/src/ecdsa_impl.h&amp;l=195" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static int secp256k1_ecdsa_sig_verify(const secp256k1_scalar *sigr, const secp256k1_scalar *sigs, const secp256k1_ge *pubkey, const secp256k1_scalar *message) {
+    unsigned char c[32];
+    secp256k1_scalar sn, u1, u2;
+#if !defined(EXHAUSTIVE_TEST_ORDER)
+    secp256k1_fe xr;
+#endif
+    secp256k1_gej pubkeyj;
+    secp256k1_gej pr;
+
+    if (secp256k1_scalar_is_zero(sigr) || secp256k1_scalar_is_zero(sigs)) {
+        return 0;
+    }
+
+    secp256k1_scalar_inverse_var(&amp;sn, sigs);
+    secp256k1_scalar_mul(&amp;u1, &amp;sn, message);
+    secp256k1_scalar_mul(&amp;u2, &amp;sn, sigr);
+    secp256k1_gej_set_ge(&amp;pubkeyj, pubkey);
+    secp256k1_ecmult(&amp;pr, &amp;pubkeyj, &amp;u2, &amp;u1);
+    if (secp256k1_gej_is_infinity(&amp;pr)) {
+        return 0;
+    }
+
+#if defined(EXHAUSTIVE_TEST_ORDER)
+{
+    secp256k1_scalar computed_r;
+    secp256k1_ge pr_ge;
+    secp256k1_ge_set_gej(&amp;pr_ge, &amp;pr);
+    secp256k1_fe_normalize(&amp;pr_ge.x);
+
+    secp256k1_fe_get_b32(c, &amp;pr_ge.x);
+    secp256k1_scalar_set_b32(&amp;computed_r, c, NULL);
+    return secp256k1_scalar_eq(sigr, &amp;computed_r);
+}
+#else
+    secp256k1_scalar_get_b32(c, sigr);
+    /* we can ignore the fe_set_b32_limit return value, because we know the input is in range */
+    (void)secp256k1_fe_set_b32_limit(&amp;xr, c);
+
+    /** We now have the recomputed R point in pr, and its claimed x coordinate (modulo n)
+     *  in xr. Naively, we would extract the x coordinate from pr (requiring a inversion modulo p),
+     *  compute the remainder modulo n, and compare it to xr. However:
+     *
+     *        xr == X(pr) mod n
+     *    &lt;=&gt; exists h. (xr + h * n &lt; p &amp;&amp; xr + h * n == X(pr))
+     *    [Since 2 * n &gt; p, h can only be 0 or 1]
+     *    &lt;=&gt; (xr == X(pr)) || (xr + n &lt; p &amp;&amp; xr + n == X(pr))
+     *    [In Jacobian coordinates, X(pr) is pr.x / pr.z^2 mod p]
+     *    &lt;=&gt; (xr == pr.x / pr.z^2 mod p) || (xr + n &lt; p &amp;&amp; xr + n == pr.x / pr.z^2 mod p)
+     *    [Multiplying both sides of the equations by pr.z^2 mod p]
+     *    &lt;=&gt; (xr * pr.z^2 mod p == pr.x) || (xr + n &lt; p &amp;&amp; (xr + n) * pr.z^2 mod p == pr.x)
+     *
+     *  Thus, we can avoid the inversion, but we have to check both cases separately.
+     *  secp256k1_gej_eq_x implements the (xr * pr.z^2 mod p == pr.x) test.
+     */
+    if (secp256k1_gej_eq_x_var(&amp;xr, &amp;pr)) {
+        /* xr * pr.z^2 mod p == pr.x, so the signature is valid. */
+        return 1;
+    }
+    if (secp256k1_fe_cmp_var(&amp;xr, &amp;secp256k1_ecdsa_const_p_minus_order) &gt;= 0) {
+        /* xr + n &gt;= p, so we can skip testing the second case. */
+        return 0;
+    }
+    secp256k1_fe_add(&amp;xr, &amp;secp256k1_ecdsa_const_order_as_fe);
+    if (secp256k1_gej_eq_x_var(&amp;xr, &amp;pr)) {
+        /* (xr + n) * pr.z^2 mod p == pr.x, so the signature is valid. */
+        return 1;
+    }
+    return 0;
+#endif
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 204, "html": "r o s iguales a cero nunca son válidas."}, {"line": 208, "html": "sn = 1/s (inverso módulo n)."}, {"line": 209, "html": "u₁ = mensaje · s⁻¹"}, {"line": 210, "html": "u₂ = r · s⁻¹"}, {"line": 212, "html": "pr = u₁·G + u₂·P, calculado de una vez con un algoritmo optimizado."}, {"line": 233, "html": "El resto de la función compara la x de ese punto con r de forma eficiente (evitando una división costosa)."}]</script></figure>
+
+<h3>Schnorr (Taproot, BIP340)</h3>
+<p>Desde Taproot (2021) también se usan firmas <b>Schnorr</b>: más simples, de tamaño fijo (64 bytes), sin maleabilidad y que permiten combinar firmas de varias personas en una sola. La comprobación es <code>s·G = R + e·P</code>, donde <code>e = hash_etiquetado(R ‖ P ‖ mensaje)</code>. Es exactamente lo que has jugado en la curva de juguete.</p>
+<figure class="cref" id="c5" data-start="236" data-file="src/pubkey.cpp"><figcaption><span class="cref-file">src/pubkey.cpp</span><span class="cref-lines">líneas 236–242</span><span class="cref-title">verificación Schnorr en Bitcoin Core</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/pubkey.cpp#L236-L242" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/pubkey.cpp&amp;l=236" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool XOnlyPubKey::VerifySchnorr(const uint256&amp; msg, std::span&lt;const unsigned char&gt; sigbytes) const
+{
+    assert(sigbytes.size() == 64);
+    secp256k1_xonly_pubkey pubkey;
+    if (!secp256k1_xonly_pubkey_parse(secp256k1_context_static, &amp;pubkey, m_keydata.data())) return false;
+    return secp256k1_schnorrsig_verify(secp256k1_context_static, sigbytes.data(), msg.begin(), 32, &amp;pubkey);
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 238, "html": "Las firmas Schnorr tienen exactamente 64 bytes: R (32) y s (32)."}, {"line": 240, "html": "En Taproot la clave pública sólo guarda la x (32 bytes); se asume la y par."}, {"line": 241, "html": "Delegación a libsecp256k1."}]</script></figure>
+<figure class="cref" id="c6" data-start="224" data-file="src/secp256k1/src/modules/schnorrsig/main_impl.h"><figcaption><span class="cref-file">src/secp256k1/src/modules/schnorrsig/main_impl.h</span><span class="cref-lines">líneas 224–270</span><span class="cref-title">Schnorr por dentro</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/secp256k1/src/modules/schnorrsig/main_impl.h#L224-L270" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/secp256k1/src/modules/schnorrsig/main_impl.h&amp;l=224" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">int secp256k1_schnorrsig_verify(const secp256k1_context* ctx, const unsigned char *sig64, const unsigned char *msg, size_t msglen, const secp256k1_xonly_pubkey *pubkey) {
+    secp256k1_scalar s;
+    secp256k1_scalar e;
+    secp256k1_gej rj;
+    secp256k1_ge pk;
+    secp256k1_gej pkj;
+    secp256k1_fe rx;
+    secp256k1_ge r;
+    unsigned char buf[32];
+    int overflow;
+
+    VERIFY_CHECK(ctx != NULL);
+    ARG_CHECK(sig64 != NULL);
+    ARG_CHECK(msg != NULL || msglen == 0);
+    ARG_CHECK(pubkey != NULL);
+
+    if (!secp256k1_fe_set_b32_limit(&amp;rx, &amp;sig64[0])) {
+        return 0;
+    }
+
+    secp256k1_scalar_set_b32(&amp;s, &amp;sig64[32], &amp;overflow);
+    if (overflow) {
+        return 0;
+    }
+
+    if (!secp256k1_xonly_pubkey_load(ctx, &amp;pk, pubkey)) {
+        return 0;
+    }
+
+    /* Compute e. */
+    secp256k1_fe_get_b32(buf, &amp;pk.x);
+    secp256k1_schnorrsig_challenge(&amp;e, &amp;sig64[0], msg, msglen, buf);
+
+    /* Compute rj =  s*G + (-e)*pkj */
+    secp256k1_scalar_negate(&amp;e, &amp;e);
+    secp256k1_gej_set_ge(&amp;pkj, &amp;pk);
+    secp256k1_ecmult(&amp;rj, &amp;pkj, &amp;e, &amp;s);
+
+    secp256k1_ge_set_gej_var(&amp;r, &amp;rj);
+    if (secp256k1_ge_is_infinity(&amp;r)) {
+        return 0;
+    }
+
+    secp256k1_fe_normalize_var(&amp;r.y);
+    return !secp256k1_fe_is_odd(&amp;r.y) &amp;&amp;
+           secp256k1_fe_equal(&amp;rx, &amp;r.x);
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 240, "html": "Los primeros 32 bytes son la x de R; debe ser menor que p."}, {"line": 244, "html": "Los otros 32 bytes son s; debe ser menor que n."}, {"line": 255, "html": "e = hash etiquetado «BIP0340/challenge» de (R.x ‖ P.x ‖ mensaje)."}, {"line": 260, "html": "Calcula s·G − e·P, que debería ser R."}, {"line": 268, "html": "Es válida si el punto obtenido tiene y par y su x coincide con la R de la firma."}]</script></figure>
+
+<h2>De clave pública a dirección</h2>
+<p>Una «dirección» no existe dentro de la cadena de bloques: es sólo una forma cómoda de escribir un <b>script de bloqueo</b> (lo verás en el nivel 4). La cartera la convierte a texto con dos codificaciones:</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Empieza por</th><th>Tipo</th><th>Codificación</th><th>Contenido</th></tr></thead>
+<tbody>
+<tr><td><code>1…</code></td><td>P2PKH (2009)</td><td>Base58Check</td><td>HASH160 de la clave pública</td></tr>
+<tr><td><code>3…</code></td><td>P2SH (2012)</td><td>Base58Check</td><td>HASH160 de un script</td></tr>
+<tr><td><code>bc1q…</code></td><td>SegWit v0 (2017)</td><td>Bech32</td><td>HASH160 de la clave (20 bytes) o SHA-256 de un script (32 bytes)</td></tr>
+<tr><td><code>bc1p…</code></td><td>Taproot (2021)</td><td>Bech32m</td><td>Clave pública x-only «retocada» (32 bytes)</td></tr>
+</tbody></table></div>
+<figure class="cref" id="c7" data-start="30" data-file="src/key_io.cpp"><figcaption><span class="cref-file">src/key_io.cpp</span><span class="cref-lines">líneas 30–35</span><span class="cref-title">dirección P2PKH</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/key_io.cpp#L30-L35" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/key_io.cpp&amp;l=30" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">    std::string operator()(const PKHash&amp; id) const
+    {
+        std::vector&lt;unsigned char&gt; data = m_params.Base58Prefix(CChainParams::PUBKEY_ADDRESS);
+        data.insert(data.end(), id.begin(), id.end());
+        return EncodeBase58Check(data);
+    }</code></pre><script type="application/json" class="cref-notes">[{"line": 32, "html": "El prefijo de versión: 0 en mainnet (por eso empiezan por «1»), 111 en testnet. Está en <code>kernel/chainparams.cpp<\/code>."}, {"line": 33, "html": "Detrás, los 20 bytes del HASH160."}, {"line": 34, "html": "Base58 con 4 bytes de checksum (para detectar errores al teclear). Base58 evita caracteres que se confunden: 0/O, I/l."}]</script></figure>
+<figure class="cref" id="c8" data-start="60" data-file="src/key_io.cpp"><figcaption><span class="cref-file">src/key_io.cpp</span><span class="cref-lines">líneas 60–66</span><span class="cref-title">dirección Taproot</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/key_io.cpp#L60-L66" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/key_io.cpp&amp;l=60" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">    std::string operator()(const WitnessV1Taproot&amp; tap) const
+    {
+        std::vector&lt;unsigned char&gt; data = {1};
+        data.reserve(53);
+        ConvertBits&lt;8, 5, true&gt;([&amp;](unsigned char c) { data.push_back(c); }, tap.begin(), tap.end());
+        return bech32::Encode(bech32::Encoding::BECH32M, m_params.Bech32HRP(), data);
+    }</code></pre><script type="application/json" class="cref-notes">[{"line": 62, "html": "Versión de testigo 1 = Taproot."}, {"line": 64, "html": "Bech32 trabaja con grupos de 5 bits (32 símbolos), así que se reagrupan los bytes."}, {"line": 65, "html": "Bech32m (BIP350) corrige un pequeño fallo de Bech32 original. «hrp» es la parte legible: <code>bc<\/code> en mainnet."}]</script></figure>
+<div class="game" data-game="base58"></div>
+
+<div class="quiz" data-title="Test del nivel 2"><script type="application/json">[
+{"q":"¿Qué operación es fácil y cuál imposible en la práctica?","o":["Calcular k desde P es fácil; P desde k imposible","Calcular P = k·G es fácil; recuperar k desde P es imposible","Ambas son fáciles","Ambas son imposibles"],"a":1,"why":"Es el problema del logaritmo discreto en curvas elípticas."},
+{"q":"¿Por qué es crítico que el nonce de ECDSA no se repita?","o":["Por eficiencia","Porque con dos firmas con el mismo nonce se puede calcular la clave privada","Porque la firma ocuparía más","No es importante"],"a":1,"why":"Por eso CKey::Sign usa RFC6979, que lo deriva de forma determinista."},
+{"q":"¿Qué parte es crítica para el consenso?","o":["Generar claves","Firmar","Verificar firmas","Codificar direcciones"],"a":2,"why":"Todos los nodos deben verificar igual. Generar y firmar son cosas de la cartera de cada uno."},
+{"q":"¿Cuánto ocupa una firma Schnorr de Taproot?","o":["71-72 bytes","64 bytes (65 con sighash explícito)","33 bytes","20 bytes"],"a":1,"why":"R (32 bytes) + s (32 bytes). Opcionalmente un byte extra de tipo de sighash."},
+{"q":"¿Está la «dirección» guardada en la cadena de bloques?","o":["Sí, como texto","No: en la cadena está el script de bloqueo; la dirección es sólo una forma de escribirlo","Sólo en bloques antiguos","Sólo en Taproot"],"a":1,"why":"key_io.cpp traduce entre scripts y texto; el consenso sólo ve scripts."}
+]</script></div>
+
+    <nav class="prevnext"><a class="prev" href="nivel-1.html"><span>← Anterior</span>Nivel 1 · Bytes, hashes y serialización</a><a class="next" href="nivel-3.html"><span>Siguiente →</span>Nivel 3 · Transacciones</a></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+<script type="module" src="assets/diagrams.js"></script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<div class="kicker">Nivel 11 · Tus claves</div>
+<h1>La cartera (wallet)</h1>
+<p class="lead">La cartera de Bitcoin Core (<a href="explorador.html#d=src/wallet"><code>src/wallet/</code></a>) guarda tus claves, reconoce qué monedas son tuyas, elige cuáles gastar y firma. <b>No forma parte del consenso</b>: puedes compilar el nodo sin ella (<code>-DENABLE_WALLET=OFF</code>). Pero si guardas dinero en ella, su seguridad es tu seguridad.</p>
+
+<pre class="mermaid">
+flowchart LR
+  S["Semilla aleatoria<br/>(GetStrongRandBytes)"] --> M["Clave maestra BIP32<br/>xprv"]
+  M -->|"derivación<br/>m/84h/0h/0h/0/i"| K["Claves hijas"]
+  K --> D["Descriptores<br/>wpkh(...), tr(...)"]
+  D --> SPK["scriptPubKeys que vigila<br/>la cartera"]
+  SPK --> U["Monedas propias<br/>(del UTXO del nodo)"]
+  U --> CS["Selección de monedas"]
+  CS --> T["Transacción sin firmar"]
+  T --> SG["Firma (CKey::Sign / SignSchnorr)"]
+  SG --> B["sendrawtransaction<br/>→ mempool → red"]
+</pre>
+
+<h2>Claves jerárquicas (BIP32)</h2>
+<p>En vez de guardar miles de claves sueltas, la cartera guarda una <b>clave maestra</b> y deriva todas las demás de forma determinista. Con una copia de seguridad de la maestra recuperas todo.</p>
+<code-ref file="src/key.cpp" fn="CKey::Derive" title="derivar una clave hija">
+  <n m="if ((nChild >> 31) == 0) {">Derivación normal (índice &lt; 2³¹): usa la clave pública del padre. Permite que alguien con la <i>xpub</i> genere direcciones de recepción sin poder gastar.</n>
+  <n m="BIP32Hash(cc, nChild, 0, UCharCast(begin()), vout.data());">Derivación «endurecida» (h, índice ≥ 2³¹): usa la clave privada del padre. Si se filtra una clave hija y la xpub, no se compromete el resto.</n>
+  <n m="memcpy(ccChild.begin(), vout.data()+32, 32);">HMAC-SHA512 da 64 bytes: los últimos 32 son el nuevo «código de cadena»…</n>
+  <n m="secp256k1_ec_seckey_tweak_add">…y los primeros 32 se suman (módulo n) a la clave del padre para obtener la del hijo.</n>
+</code-ref>
+
+<h2>Descriptores: qué monedas son mías</h2>
+<p>Desde la v0.21, las carteras usan <b>descriptores</b> (<src file="doc/descriptors.md">doc/descriptors.md</src>): un pequeño lenguaje que describe exactamente qué scripts pertenecen a la cartera. Ejemplo: <code>wpkh([d34db33f/84h/0h/0h]xpub6…/0/*)</code> significa «salidas P2WPKH de las claves derivadas en esa ruta». El analizador está en <src file="src/script/descriptor.cpp">src/script/descriptor.cpp</src> y la cartera lo usa en <src file="src/wallet/scriptpubkeyman.cpp">scriptpubkeyman.cpp</src>. Desde la v30 las carteras antiguas (no descriptor, con Berkeley DB) ya no se pueden usar; hay que migrarlas.</p>
+
+<h2>Elegir qué monedas gastar</h2>
+<p>Pagar 0,125 BTC teniendo monedas de 0,5, 0,12, 0,033… ¿cuáles usar? Más entradas = más comisión ahora, pero menos monedas pequeñas que gastar en el futuro. Bitcoin Core ejecuta <b>varios algoritmos</b> y elige el resultado con menor «desperdicio» (waste):</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Algoritmo</th><th>Idea</th></tr></thead>
+<tbody>
+<tr><td>Branch and Bound (BnB)</td><td>Busca una combinación exacta (sin cambio) explorando un árbol de decisiones.</td></tr>
+<tr><td>CoinGrinder</td><td>Cuando las comisiones son altas, busca la combinación de menor peso.</td></tr>
+<tr><td>Knapsack</td><td>El algoritmo histórico: pruebas aleatorias para acercarse al objetivo.</td></tr>
+<tr><td>Single Random Draw (SRD)</td><td>Monedas al azar hasta cubrir objetivo + cambio. Bueno para la privacidad.</td></tr>
+</tbody></table></div>
+<code-ref file="src/wallet/coinselection.cpp" lines="64-71" title="la métrica de desperdicio">
+  <n m="The best">La mejor solución es la que minimiza el desperdicio…</n>
+  <n m="waste = selectionTotal - target + inputs × (currentFeeRate - longTermFeeRate)">…= lo que sobra (y se regala al minero si no hay cambio) + el sobrecoste de gastar estas entradas ahora en lugar de cuando las comisiones estén en su nivel «a largo plazo». Si las comisiones están bajas, este término es negativo: conviene consolidar monedas.</n>
+</code-ref>
+<code-ref file="src/wallet/coinselection.cpp" fn="SelectionResult::RecalculateWaste">
+  <n m="waste += coin.GetFee() - coin.long_term_fee;">Por cada entrada: comisión actual − comisión a largo plazo.</n>
+  <n m="waste += change_cost;">Si hay cambio: el coste de crearlo y gastarlo en el futuro…</n>
+  <n m="waste += selected_effective_value - m_target;">…si no, el exceso que se pierde en comisiones.</n>
+</code-ref>
+<div class="game" data-game="coinselect"></div>
+
+<h2>Cifrado de la cartera</h2>
+<code-ref file="src/wallet/crypter.cpp" fn="CCrypter::BytesToKeySHA512AES" title="de contraseña a clave AES">
+  <n m="di.Write(UCharCast(key_data.data()), key_data.size());">Se hashea la contraseña con una sal aleatoria (SHA-512)…</n>
+  <n m="for(int i = 0; i != count - 1; i++)">…y se repite <b>muchas veces</b> (el número de rondas se calibra para que tarde ~0,1 s). Así, probar contraseñas por fuerza bruta es lentísimo.</n>
+  <n m="memcpy(key, buf, WALLET_CRYPTO_KEY_SIZE);">32 bytes para la clave AES-256…</n>
+  <n m="memcpy(iv, buf + WALLET_CRYPTO_KEY_SIZE, WALLET_CRYPTO_IV_SIZE);">…y 16 para el vector de inicialización.</n>
+  <n m="memory_cleanse(buf, sizeof(buf));">Se borra el búfer de memoria: los secretos no deben quedarse en RAM.</n>
+</code-ref>
+<p>Esa clave derivada de la contraseña cifra una <b>clave maestra</b> aleatoria, y la maestra cifra cada clave privada (AES-256-CBC, <src file="src/wallet/crypter.cpp" m="bool CCrypter::Encrypt">CCrypter::Encrypt</src>). Cambiar la contraseña sólo vuelve a cifrar la maestra. La memoria que contiene secretos usa un asignador especial que impide que se escriba en el disco de intercambio (<src file="src/support/allocators/secure.h">support/allocators/secure.h</src>).</p>
+
+<h2>PSBT y firmantes externos</h2>
+<p>Las PSBT (<src file="src/psbt.cpp">psbt.cpp</src>, BIP174/370) permiten construir una transacción en un ordenador, firmarla en otro (por ejemplo, una cartera hardware sin conexión) y difundirla desde un tercero. La cartera puede funcionar como «sólo vigilancia» (sin claves privadas) usando descriptores con xpubs.</p>
+
+<div class="callout"><span class="t">Para auditar la cartera</span><p>Prioridades: (1) aleatoriedad de las claves (<code>random.cpp</code>, <code>CKey::MakeNewKey</code>); (2) que lo que firmas es lo que crees (PSBT, sighash, importes y cambio); (3) cifrado y manejo de memoria; (4) privacidad (selección de monedas, reutilización de direcciones). Las pruebas están en <a href="explorador.html#d=src/wallet/test"><code>src/wallet/test/</code></a> y <code>test/functional/wallet_*.py</code>.</p></div>
+
+<div class="quiz" data-title="Test del nivel 11"><script type="application/json">[
+{"q":"¿Es la cartera parte del consenso?","o":["Sí","No: se puede compilar el nodo sin ella","Sólo en mainnet","Sólo la selección de monedas"],"a":1,"why":"src/wallet no afecta a qué bloques son válidos."},
+{"q":"¿Qué ventaja tiene la derivación endurecida (h)?","o":["Es más rápida","Si se filtran una clave hija y la xpub, no se compromete el resto del árbol","Genera direcciones más cortas","Ninguna"],"a":1,"why":"Usa la clave privada del padre en el HMAC."},
+{"q":"¿Qué minimiza la cartera al elegir monedas?","o":["El número de entradas","La métrica de «waste» (desperdicio)","El tamaño del cambio siempre","El tiempo de cálculo"],"a":1,"why":"Varios algoritmos; gana el de menor waste."},
+{"q":"¿Por qué se repite el hash de la contraseña miles de veces?","o":["Por error","Para que probar contraseñas por fuerza bruta sea muy lento","Para comprimir","Para la red"],"a":1,"why":"BytesToKeySHA512AES con count rondas."}
+]</script></div>

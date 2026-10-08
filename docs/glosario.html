@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glosario · Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="glosario">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html">3 · Transacciones</a></li>
+<li><a href="nivel-4.html">4 · Script</a></li>
+<li><a href="nivel-5.html">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html">8 · Red P2P</a></li>
+<li><a href="nivel-9.html">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html" class="active">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <div class="kicker">Referencia</div>
+<h1>Glosario</h1>
+<p class="lead">Los términos que aparecen en el código y en esta web, en una frase, con el nivel donde se explican.</p>
+<div class="row"><input type="text" id="gq" placeholder="Filtrar términos…" style="flex:1"></div>
+<div class="table-wrap"><table class="data" id="gloss"><thead><tr><th>Término</th><th>Significado</th><th>Nivel</th></tr></thead><tbody>
+<tr><td>assumevalid</td><td>Hash de un bloque cuyas firmas anteriores no se reverifican durante la descarga inicial (todo lo demás sí). Desactivable con <code>-assumevalid=0</code>.</td><td><a href="nivel-6.html">6</a></td></tr>
+<tr><td>assumeutxo</td><td>Arrancar desde una instantánea del UTXO mientras se valida la historia completa en segundo plano.</td><td><a href="nivel-7.html">7</a></td></tr>
+<tr><td>Bech32 / Bech32m</td><td>Codificación de direcciones SegWit (bc1q…) y Taproot (bc1p…).</td><td><a href="nivel-2.html">2</a></td></tr>
+<tr><td>BIP</td><td>Bitcoin Improvement Proposal: documento que especifica un cambio.</td><td><a href="nivel-10.html">10</a></td></tr>
+<tr><td>BIP9 / versionbits</td><td>Mecanismo de activación de soft forks por señalización de mineros.</td><td><a href="nivel-10.html">10</a></td></tr>
+<tr><td>BIP324</td><td>Transporte P2P cifrado (v2).</td><td><a href="nivel-8.html">8</a></td></tr>
+<tr><td>Bloque génesis</td><td>El primer bloque, escrito en el código (chainparams.cpp).</td><td><a href="nivel-5.html">5</a></td></tr>
+<tr><td>CAmount</td><td>Entero de 64 bits con una cantidad en satoshis.</td><td><a href="nivel-3.html">3</a></td></tr>
+<tr><td>CBlockIndex</td><td>Entrada en memoria de cada cabecera conocida; forma el árbol de bloques.</td><td><a href="nivel-7.html">7</a></td></tr>
+<tr><td>CChain</td><td>La cadena activa: vector de punteros del génesis a la punta.</td><td><a href="nivel-7.html">7</a></td></tr>
+<tr><td>CCoinsViewCache</td><td>Caché en memoria del conjunto UTXO.</td><td><a href="nivel-7.html">7</a></td></tr>
+<tr><td>Chainstate</td><td>El estado de una cadena: UTXO + cadena activa.</td><td><a href="nivel-6.html">6</a></td></tr>
+<tr><td>Coinbase</td><td>Primera transacción de un bloque; crea monedas nuevas para el minero.</td><td><a href="nivel-3.html">3</a></td></tr>
+<tr><td>Compact blocks</td><td>Enviar un bloque como IDs cortos de transacciones (BIP152).</td><td><a href="nivel-8.html">8</a></td></tr>
+<tr><td>CompactSize</td><td>Entero de longitud variable (1, 3, 5 o 9 bytes) usado para longitudes.</td><td><a href="nivel-1.html">1</a></td></tr>
+<tr><td>Consenso</td><td>Reglas que todos los nodos aplican para decidir qué bloques son válidos.</td><td><a href="nivel-6.html">6</a></td></tr>
+<tr><td>CPFP</td><td>Child Pays For Parent: un hijo con comisión alta arrastra a su padre al bloque.</td><td><a href="nivel-9.html">9</a></td></tr>
+<tr><td>cs_main</td><td>El candado principal que protege el estado de la cadena.</td><td><a href="nivel-12.html">12</a></td></tr>
+<tr><td>Descriptor</td><td>Lenguaje que describe qué scripts pertenecen a una cartera.</td><td><a href="nivel-11.html">11</a></td></tr>
+<tr><td>Dificultad / nBits</td><td>Objetivo que debe cumplir el hash del bloque, en formato compacto.</td><td><a href="nivel-5.html">5</a></td></tr>
+<tr><td>Dust (polvo)</td><td>Salida que cuesta más gastar que lo que vale.</td><td><a href="nivel-9.html">9</a></td></tr>
+<tr><td>ECDSA</td><td>Algoritmo de firma de curva elíptica usado desde 2009.</td><td><a href="nivel-2.html">2</a></td></tr>
+<tr><td>Eclipse</td><td>Ataque en que alguien controla todas las conexiones de un nodo.</td><td><a href="nivel-8.html">8</a></td></tr>
+<tr><td>Fuzzing</td><td>Pruebas con datos aleatorios para encontrar fallos.</td><td><a href="nivel-13.html">13</a></td></tr>
+<tr><td>Guix</td><td>Sistema de compilación reproducible: binarios idénticos bit a bit.</td><td><a href="nivel-0.html">0</a></td></tr>
+<tr><td>Halving</td><td>Reducción a la mitad del subsidio cada 210 000 bloques.</td><td><a href="nivel-5.html">5</a></td></tr>
+<tr><td>Hard fork</td><td>Cambio que relaja reglas; los nodos viejos rechazan la nueva cadena.</td><td><a href="nivel-10.html">10</a></td></tr>
+<tr><td>HASH160</td><td>RIPEMD160(SHA256(x)), 20 bytes.</td><td><a href="nivel-1.html">1</a></td></tr>
+<tr><td>Headers-first</td><td>Descargar primero todas las cabeceras y luego los bloques.</td><td><a href="nivel-8.html">8</a></td></tr>
+<tr><td>Little-endian</td><td>Orden de bytes con el menos significativo primero.</td><td><a href="nivel-1.html">1</a></td></tr>
+<tr><td>Maleabilidad</td><td>Poder cambiar los bytes (y el hash) de algo sin cambiar su significado.</td><td><a href="nivel-3.html">3</a></td></tr>
+<tr><td>Mempool</td><td>Transacciones válidas aún no confirmadas que guarda tu nodo.</td><td><a href="nivel-9.html">9</a></td></tr>
+<tr><td>Merkle (raíz/árbol)</td><td>Hash que resume todas las transacciones de un bloque.</td><td><a href="nivel-5.html">5</a></td></tr>
+<tr><td>MTP (Median Time Past)</td><td>Mediana de las marcas de tiempo de los 11 bloques anteriores.</td><td><a href="nivel-6.html">6</a></td></tr>
+<tr><td>nChainWork</td><td>Trabajo acumulado desde el génesis; decide qué cadena gana.</td><td><a href="nivel-7.html">7</a></td></tr>
+<tr><td>Nonce</td><td>Número que el minero varía para buscar un hash válido (y, en firmas, número de un solo uso).</td><td><a href="nivel-5.html">5</a></td></tr>
+<tr><td>Opcode</td><td>Instrucción del lenguaje Script.</td><td><a href="nivel-4.html">4</a></td></tr>
+<tr><td>Outpoint</td><td>Referencia a una salida: txid + índice.</td><td><a href="nivel-3.html">3</a></td></tr>
+<tr><td>P2PKH / P2SH / P2WPKH / P2WSH / P2TR</td><td>Tipos estándar de script de bloqueo.</td><td><a href="nivel-4.html">4</a></td></tr>
+<tr><td>Política</td><td>Reglas locales de la mempool, más estrictas que el consenso.</td><td><a href="nivel-9.html">9</a></td></tr>
+<tr><td>PSBT</td><td>Transacción parcialmente firmada (BIP174).</td><td><a href="nivel-11.html">11</a></td></tr>
+<tr><td>RBF</td><td>Replace-By-Fee: reemplazar una transacción pagando más.</td><td><a href="nivel-9.html">9</a></td></tr>
+<tr><td>Regtest</td><td>Red privada local para pruebas, donde minas al instante.</td><td><a href="nivel-0.html">0</a></td></tr>
+<tr><td>Reorganización (reorg)</td><td>Cambio a otra rama con más trabajo: desconectar y conectar bloques.</td><td><a href="nivel-6.html">6</a></td></tr>
+<tr><td>Satoshi</td><td>0,00000001 BTC, la unidad mínima.</td><td><a href="nivel-3.html">3</a></td></tr>
+<tr><td>Schnorr</td><td>Algoritmo de firma de Taproot (BIP340).</td><td><a href="nivel-2.html">2</a></td></tr>
+<tr><td>Script</td><td>Lenguaje de pila que define las condiciones de gasto.</td><td><a href="nivel-4.html">4</a></td></tr>
+<tr><td>scriptPubKey / scriptSig</td><td>Script de bloqueo (en la salida) y de desbloqueo (en la entrada).</td><td><a href="nivel-4.html">4</a></td></tr>
+<tr><td>secp256k1</td><td>La curva elíptica de Bitcoin y la biblioteca que la implementa.</td><td><a href="nivel-2.html">2</a></td></tr>
+<tr><td>SegWit</td><td>Testigo segregado: firmas fuera del txid (BIP141).</td><td><a href="nivel-3.html">3</a></td></tr>
+<tr><td>Serialización</td><td>Convertir estructuras en una secuencia exacta de bytes.</td><td><a href="nivel-1.html">1</a></td></tr>
+<tr><td>SHA256d</td><td>SHA-256 aplicado dos veces.</td><td><a href="nivel-1.html">1</a></td></tr>
+<tr><td>Sighash</td><td>El resumen de la transacción que se firma realmente.</td><td><a href="nivel-4.html">4</a></td></tr>
+<tr><td>Soft fork</td><td>Cambio que endurece reglas y es compatible con nodos viejos.</td><td><a href="nivel-10.html">10</a></td></tr>
+<tr><td>Taproot</td><td>Soft fork de 2021: Schnorr, árbol de scripts, Tapscript.</td><td><a href="nivel-4.html">4</a></td></tr>
+<tr><td>Testigo (witness)</td><td>Datos de desbloqueo separados del cuerpo de la transacción.</td><td><a href="nivel-3.html">3</a></td></tr>
+<tr><td>TRUC (v3)</td><td>Transacciones versión 3 con topología restringida para evitar pinning.</td><td><a href="nivel-9.html">9</a></td></tr>
+<tr><td>txid / wtxid</td><td>Identificador de transacción sin / con testigos.</td><td><a href="nivel-3.html">3</a></td></tr>
+<tr><td>Undo (rev*.dat)</td><td>Datos para deshacer un bloque en una reorganización.</td><td><a href="nivel-7.html">7</a></td></tr>
+<tr><td>UTXO</td><td>Salida de transacción no gastada: una «moneda».</td><td><a href="nivel-3.html">3</a></td></tr>
+<tr><td>vsize / peso</td><td>Tamaño ponderado: bytes normales ×4, testigo ×1; vsize = peso/4.</td><td><a href="nivel-3.html">3</a></td></tr>
+</tbody></table></div>
+<script>
+document.getElementById("gq").addEventListener("input", function (e) {
+  var q = e.target.value.toLowerCase();
+  document.querySelectorAll("#gloss tbody tr").forEach(function (tr) { tr.style.display = tr.textContent.toLowerCase().indexOf(q) >= 0 ? "" : "none"; });
+});
+</script>
+
+    <nav class="prevnext"><a class="prev" href="explorador.html"><span>← Anterior</span>Explorador: los archivos del repositorio, uno a uno</a><span></span></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+
+</body>
+</html>

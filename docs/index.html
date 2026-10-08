@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="index">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html" class="active">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html">3 · Transacciones</a></li>
+<li><a href="nivel-4.html">4 · Script</a></li>
+<li><a href="nivel-5.html">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html">8 · Red P2P</a></li>
+<li><a href="nivel-9.html">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <section class="hero">
+  <div class="kicker">Curso abierto · Bitcoin Core v31.1</div>
+  <h1>Bitcoin Core, línea a línea</h1>
+  <p class="lead">Una guía en español, por niveles y con juegos, para entender y auditar <b>tú mismo</b> el programa que ejecutas cuando montas un nodo de Bitcoin. Sin fiarte de auditores, de influencers ni de esta web: sólo del código que descargas.</p>
+</section>
+
+<div class="stats">
+  <div class="stat"><b>2.923</b><span>archivos en el repositorio, todos navegables en el explorador</span></div>
+  <div class="stat"><b>913.901</b><span>líneas en total (código, pruebas, documentación)</span></div>
+  <div class="stat"><b>178.244</b><span>líneas de C++ propio en <code>src/</code> (sin bibliotecas externas)</span></div>
+  <div class="stat"><b>14</b><span>niveles, de «qué es un byte» a «cómo auditar un cambio de consenso»</span></div>
+</div>
+
+<div class="callout">
+  <span class="t">El principio de esta web: «No confíes, verifica»</span>
+  <p>Cada fragmento de código que verás aquí <b>no está copiado a mano</b>: lo extrae automáticamente el script <code>build.py</code> del commit <code>9be056a8a72b</code> (etiqueta <code>v31.1</code>) del repositorio oficial <a href="https://github.com/bitcoin/bitcoin">github.com/bitcoin/bitcoin</a>. Los números de línea son los reales. Junto a cada fragmento tienes un enlace a GitHub y al archivo completo, para que compares con tu propia copia. Si alguna vez algo de aquí no coincide con tu código, <b>gana tu código</b>.</p>
+</div>
+
+<h2>¿Por qué aprender a leer el código?</h2>
+<p>Bitcoin no tiene un jefe que decida qué es válido. Cada nodo descarga todos los bloques desde 2009 y comprueba, regla por regla, que nadie ha hecho trampas: que nadie ha gastado dos veces la misma moneda, que nadie ha creado más bitcoins de los permitidos y que cada pago lleva la firma de su dueño. Esas reglas no están en un documento legal: <b>son el código</b>. Si entiendes el código, entiendes exactamente qué protege tu dinero.</p>
+
+<div class="analogy">Imagina que te dan una calculadora para revisar las cuentas de un banco. Puedes creer al banco, creer a un auditor que revisó la calculadora… o abrirla y ver cómo suma. Esta web te enseña a abrir la calculadora.</div>
+
+<h2>Mapa de la tecnología</h2>
+<p>Así se reparten las piezas. No te preocupes si no entiendes los nombres: cada caja tiene su nivel.</p>
+<pre class="mermaid">
+flowchart LR
+  subgraph RED["Nivel 8 · Red P2P"]
+    NET["net.cpp<br/>sockets y conexiones"] --> NP["net_processing.cpp<br/>interpreta mensajes"]
+  end
+  subgraph VAL["Niveles 5-7 y 10 · Consenso"]
+    V["validation.cpp<br/>¿es válido?"] --> S["script/interpreter.cpp<br/>¿está bien firmado?"]
+    V --> C["coins.cpp + txdb.cpp<br/>monedas sin gastar (UTXO)"]
+    V --> BS["blockstorage.cpp<br/>bloques en disco"]
+  end
+  subgraph MP["Nivel 9 · Política"]
+    M["txmempool.cpp<br/>transacciones en espera"] --> MI["miner.cpp<br/>plantilla de bloque"]
+  end
+  NP -- "bloques" --> V
+  NP -- "transacciones" --> M
+  M -- "comprobar" --> V
+  W["Nivel 11 · wallet/"] -. "interfaces" .-> V
+  R["Nivel 12 · rpc/ + init.cpp"] -. "órdenes" .-> V
+  CR["Niveles 1-2 · crypto/ + secp256k1"] --> S
+</pre>
+
+<h2>Los niveles, en orden</h2>
+<p>El orden está pensado para que cada nivel sólo use lo que ya has visto. Empieza por el 0 aunque sepas programar: ahí aprendes a obtener el código <i>auténtico</i>.</p>
+<div class="grid2">
+  <a class="card" href="nivel-0.html"><div class="lvl">Nivel 0</div><h4>No confíes, verifica</h4><p>Descargar el código auténtico, comprobar firmas, compilarlo y orientarte en el repositorio.</p></a>
+  <a class="card" href="nivel-1.html"><div class="lvl">Nivel 1</div><h4>Bytes, hashes y serialización</h4><p>El idioma interno: hexadecimal, little-endian, SHA-256 y cómo se convierte todo en bytes.</p></a>
+  <a class="card" href="nivel-2.html"><div class="lvl">Nivel 2</div><h4>Claves, firmas y direcciones</h4><p>Curvas elípticas sin miedo, ECDSA y Schnorr, y cómo nace una dirección.</p></a>
+  <a class="card" href="nivel-3.html"><div class="lvl">Nivel 3</div><h4>Transacciones</h4><p>Entradas, salidas, el modelo UTXO y las primeras reglas de consenso.</p></a>
+  <a class="card" href="nivel-4.html"><div class="lvl">Nivel 4</div><h4>Script</h4><p>El pequeño lenguaje que decide quién puede gastar cada moneda. Con simulador.</p></a>
+  <a class="card" href="nivel-5.html"><div class="lvl">Nivel 5</div><h4>Bloques y prueba de trabajo</h4><p>Cabeceras, árbol de Merkle, minería, dificultad y los 21 millones.</p></a>
+  <a class="card" href="nivel-6.html"><div class="lvl">Nivel 6</div><h4>Validación</h4><p>El corazón: cómo un bloque pasa de «recibido» a «parte de la cadena».</p></a>
+  <a class="card" href="nivel-7.html"><div class="lvl">Nivel 7</div><h4>UTXO y disco</h4><p>Dónde y cómo guarda el nodo el estado; cachés, LevelDB y deshacer bloques.</p></a>
+  <a class="card" href="nivel-8.html"><div class="lvl">Nivel 8</div><h4>Red P2P</h4><p>Cómo se encuentran y hablan los nodos, y cómo se defienden de atacantes.</p></a>
+  <a class="card" href="nivel-9.html"><div class="lvl">Nivel 9</div><h4>Mempool y minería</h4><p>Consenso frente a política: qué transacciones retransmite tu nodo y cómo se arma un bloque.</p></a>
+  <a class="card" href="nivel-10.html"><div class="lvl">Nivel 10</div><h4>Soft forks</h4><p>Cómo cambian las reglas sin romper la red: BIP9, SegWit, Taproot.</p></a>
+  <a class="card" href="nivel-11.html"><div class="lvl">Nivel 11</div><h4>Wallet</h4><p>La cartera: descriptores, selección de monedas, firma y cifrado.</p></a>
+  <a class="card" href="nivel-12.html"><div class="lvl">Nivel 12</div><h4>Arranque y RPC</h4><p>Desde <code>main()</code> hasta el nodo funcionando; RPC, hilos y bloqueos.</p></a>
+  <a class="card" href="nivel-13.html"><div class="lvl">Nivel 13</div><h4>Auditar por tu cuenta</h4><p>Método, prioridades, pruebas, fuzzing, compilación reproducible y lista de comprobación.</p></a>
+</div>
+
+<h2>Cómo está hecha cada lección</h2>
+<div class="grid2">
+  <div class="card"><h4>📖 Explicación sencilla</h4><p>Primero la idea, con analogías del mundo real y sin jerga innecesaria.</p></div>
+  <div class="card"><h4>🔎 Código real, línea a línea</h4><p>Fragmentos auténticos con números de línea y notas intercaladas. Pulsa «Explicaciones: sí/no» para leer el código limpio.</p></div>
+  <div class="card"><h4>🎮 Juegos y simuladores</h4><p>Mina un bloque, ejecuta un Script paso a paso, provoca una reorganización, reconstruye el bloque génesis…</p></div>
+  <div class="card"><h4>🧠 Test al final</h4><p>Cada nivel acaba con preguntas. Tu progreso se guarda sólo en tu navegador.</p></div>
+</div>
+
+<h2>«¿De verdad explicáis hasta la última línea?»</h2>
+<p>El repositorio tiene 913.901 líneas: además del nodo incluye bibliotecas de terceros (LevelDB, libsecp256k1…), la interfaz gráfica, miles de pruebas y documentación. Para que <b>ninguna línea quede fuera de tu alcance</b> esta web funciona en tres capas:</p>
+<ol class="steps">
+  <li><b>Niveles 0–13:</b> explican la arquitectura completa y recorren línea a línea las partes que deciden qué es Bitcoin (consenso, script, validación, prueba de trabajo, UTXO) y las piezas clave de red, mempool, cartera y arranque.</li>
+  <li><b><a href="explorador.html">Explorador</a>:</b> los 2.923 archivos, cada uno con su descripción, el comentario de cabecera del propio archivo, la lista de sus funciones y clases, y su código completo descargado de GitHub en el commit fijado. Las líneas explicadas en los niveles aparecen anotadas dentro del archivo.</li>
+  <li><b>Método de auditoría (nivel 13):</b> para que puedas seguir tú solo con cualquier archivo, y con cada nueva versión, usando las mismas herramientas que usan los desarrolladores.</li>
+</ol>
+
+<h2>Requisitos</h2>
+<p>Ninguno, salvo curiosidad. Si nunca has programado, lee las secciones «Para leer C++ sin saber C++» del nivel 0 y apóyate en las notas. Si ya programas, puedes saltar directamente a las notas del código.</p>
+
+<p><a class="btn" href="nivel-0.html" style="display:inline-block;background:var(--accent);color:#fff;padding:10px 18px;border-radius:8px;font-weight:600">Empezar por el nivel 0 →</a></p>
+
+    <nav class="prevnext"><span></span><a class="next" href="nivel-0.html"><span>Siguiente →</span>Nivel 0 · No confíes: verifica el código tú mismo</a></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+<script type="module" src="assets/diagrams.js"></script>
+</body>
+</html>

@@ -1,0 +1,100 @@
+<div class="kicker">Nivel 2 · Criptografía</div>
+<h1>Claves, firmas y direcciones</h1>
+<p class="lead">¿Cómo demuestras que una moneda es tuya sin enseñar tu secreto? Con una firma digital. En este nivel verás de dónde sale una clave privada, cómo se obtiene la pública, cómo se firma y verifica, y cómo nace una dirección. Sin fórmulas difíciles: con una curva de juguete que puedes tocar.</p>
+
+<h2>La idea en una frase</h2>
+<div class="analogy">Tu <b>clave privada</b> es un número secreto enorme (como elegir un grano de arena concreto entre todos los de mil millones de playas… y luego mil millones de veces más). Tu <b>clave pública</b> se obtiene «mezclando» ese número de una forma que es fácil hacer pero imposible deshacer. Una <b>firma</b> es una prueba matemática de que conoces el número secreto, ligada a un mensaje concreto, que cualquiera puede comprobar con tu clave pública.</div>
+
+<pre class="mermaid">
+flowchart TD
+  K["Clave privada k<br/>(256 bits aleatorios)"] -->|"P = k·G<br/>(fácil)"| P["Clave pública P<br/>(un punto de la curva)"]
+  P -.->|"obtener k desde P<br/>(imposible en la práctica)"| K
+  P -->|"HASH160 o tweak Taproot"| A["Dirección<br/>1… / 3… / bc1q… / bc1p…"]
+  K -->|"firmar(mensaje)"| S["Firma"]
+  S -->|"verificar(P, mensaje, firma)"| V{"¿válida?"}
+</pre>
+
+<h2>Curvas elípticas, con números pequeños</h2>
+<p>Bitcoin usa la curva <b>secp256k1</b>: los puntos (x, y) que cumplen <code>y² = x³ + 7</code>, haciendo todas las cuentas «módulo» un primo p enorme (casi 2²⁵⁶). Hay una forma de «sumar» puntos de la curva. Sumar un punto fijo G consigo mismo k veces da <code>k·G</code>. Ese es todo el truco: <b>calcular k·G es rápido; deducir k a partir de k·G es imposible</b> cuando los números son tan grandes.</p>
+<div class="game" data-game="ec"></div>
+
+<h2>¿Quién implementa esto en Bitcoin Core?</h2>
+<p>La matemática de la curva vive en <a href="explorador.html#d=src/secp256k1"><code>src/secp256k1/</code></a>, una biblioteca escrita en C especialmente para Bitcoin, muy revisada y con pruebas exhaustivas, que se incluye dentro del repositorio como «subárbol». Bitcoin Core la usa a través de dos clases sencillas: <code>CKey</code> (clave privada, <src file="src/key.cpp">key.cpp</src>) y <code>CPubKey</code>/<code>XOnlyPubKey</code> (clave pública, <src file="src/pubkey.cpp">pubkey.cpp</src>).</p>
+<div class="callout"><span class="t">Para auditar</span><p>Para el consenso <b>sólo importa la verificación</b> (<code>pubkey.cpp</code> y las funciones <code>verify</code> de libsecp256k1). Crear claves y firmar es cosa de la cartera: si tu cartera firma mal, pierdes tú, pero no rompe la red. Si la verificación aceptara firmas falsas, se rompería todo.</p></div>
+
+<h3>Crear una clave privada</h3>
+<code-ref file="src/key.cpp" start="bool CKey::Check(" end="fCompressed = fCompressedIn;" title="generar una clave nueva">
+  <n m="secp256k1_ec_seckey_verify">Una clave es válida si es un número entre 1 y n−1, donde n es el número de puntos de la curva (un poco menos de 2²⁵⁶).</n>
+  <n m="GetStrongRandBytes(*keydata);">Pide 32 bytes al generador aleatorio fuerte del nodo (<src file="src/random.cpp">random.cpp</src>, que mezcla el sistema operativo, el procesador y otras fuentes). Esta es la línea más importante para tu seguridad: si el azar fuera predecible, te robarían.</n>
+  <n m="while (!Check(keydata->data()));">Si por una casualidad astronómica sale un número fuera de rango, repite.</n>
+</code-ref>
+
+<h3>Firmar (ECDSA)</h3>
+<code-ref file="src/key.cpp" fn="CKey::Sign" title="firma ECDSA">
+  <n m="secp256k1_nonce_function_rfc6979">ECDSA necesita un número secreto de un solo uso (nonce). Si se repite o es predecible, <b>se puede calcular tu clave privada</b> (le pasó a Sony con la PS3). RFC6979 lo deriva de forma determinista de la clave y el mensaje: nunca se repite para mensajes distintos.</n>
+  <n m="while (ret && !SigHasLowR(&sig) && grind)">«Grinding»: prueba hasta obtener una firma cuya R sea pequeña, para que ocupe 1 byte menos (ahorra comisiones). No afecta a la seguridad.</n>
+  <n m="secp256k1_ecdsa_signature_serialize_der">Codifica la firma en formato DER (el estándar ASN.1 que usan las firmas ECDSA en Bitcoin).</n>
+  <n m="ret = secp256k1_ecdsa_verify(secp256k1_context_static, &sig, hash.begin(), &pk);">Paranoia sana: verifica la firma recién hecha antes de devolverla, por si un fallo de memoria o de hardware la corrompió.</n>
+</code-ref>
+
+<h3>Verificar (lo que hace cada nodo)</h3>
+<code-ref file="src/pubkey.cpp" fn="CPubKey::Verify" title="verificación ECDSA">
+  <n m="secp256k1_ec_pubkey_parse">Convierte los bytes de la clave pública en un punto de la curva. Si no es un punto válido, falla.</n>
+  <n m="ecdsa_signature_parse_der_lax">Lee la firma DER «con manga ancha»: en los primeros años se aceptaron firmas mal codificadas y siguen estando en la cadena. Las reglas estrictas (BIP66, DERSIG) se comprueban antes, en el intérprete de Script.</n>
+  <n m="secp256k1_ecdsa_signature_normalize">Toda firma ECDSA (r, s) tiene una gemela (r, n−s) igual de válida. Se normaliza a la «s baja» para que libsecp256k1 la acepte; la política del nodo (<code>LOW_S</code>) ya rechaza las «s altas» en la mempool para evitar maleabilidad.</n>
+  <n m="return secp256k1_ecdsa_verify">La verificación matemática en sí.</n>
+</code-ref>
+<p>Y dentro de libsecp256k1, la verificación ECDSA es esta cuenta: con u₁ = mensaje/s y u₂ = r/s, el punto <code>u₁·G + u₂·P</code> debe tener coordenada x igual a r.</p>
+<code-ref file="src/secp256k1/src/ecdsa_impl.h" fn="secp256k1_ecdsa_sig_verify" title="el núcleo matemático (C)">
+  <n m="secp256k1_scalar_is_zero(sigr)">r o s iguales a cero nunca son válidas.</n>
+  <n m="secp256k1_scalar_inverse_var(&sn, sigs);">sn = 1/s (inverso módulo n).</n>
+  <n m="secp256k1_scalar_mul(&u1, &sn, message);">u₁ = mensaje · s⁻¹</n>
+  <n m="secp256k1_scalar_mul(&u2, &sn, sigr);">u₂ = r · s⁻¹</n>
+  <n m="secp256k1_ecmult(&pr, &pubkeyj, &u2, &u1);">pr = u₁·G + u₂·P, calculado de una vez con un algoritmo optimizado.</n>
+  <n m="We now have the recomputed R point">El resto de la función compara la x de ese punto con r de forma eficiente (evitando una división costosa).</n>
+</code-ref>
+
+<h3>Schnorr (Taproot, BIP340)</h3>
+<p>Desde Taproot (2021) también se usan firmas <b>Schnorr</b>: más simples, de tamaño fijo (64 bytes), sin maleabilidad y que permiten combinar firmas de varias personas en una sola. La comprobación es <code>s·G = R + e·P</code>, donde <code>e = hash_etiquetado(R ‖ P ‖ mensaje)</code>. Es exactamente lo que has jugado en la curva de juguete.</p>
+<code-ref file="src/pubkey.cpp" fn="XOnlyPubKey::VerifySchnorr" title="verificación Schnorr en Bitcoin Core">
+  <n m="assert(sigbytes.size() == 64);">Las firmas Schnorr tienen exactamente 64 bytes: R (32) y s (32).</n>
+  <n m="secp256k1_xonly_pubkey_parse">En Taproot la clave pública sólo guarda la x (32 bytes); se asume la y par.</n>
+  <n m="secp256k1_schnorrsig_verify">Delegación a libsecp256k1.</n>
+</code-ref>
+<code-ref file="src/secp256k1/src/modules/schnorrsig/main_impl.h" fn="secp256k1_schnorrsig_verify" title="Schnorr por dentro">
+  <n m="if (!secp256k1_fe_set_b32_limit(&rx, &sig64[0]))">Los primeros 32 bytes son la x de R; debe ser menor que p.</n>
+  <n m="secp256k1_scalar_set_b32(&s, &sig64[32], &overflow);">Los otros 32 bytes son s; debe ser menor que n.</n>
+  <n m="secp256k1_schnorrsig_challenge">e = hash etiquetado «BIP0340/challenge» de (R.x ‖ P.x ‖ mensaje).</n>
+  <n m="secp256k1_ecmult(&rj, &pkj, &e, &s);">Calcula s·G − e·P, que debería ser R.</n>
+  <n m="return !secp256k1_fe_is_odd(&r.y) &&">Es válida si el punto obtenido tiene y par y su x coincide con la R de la firma.</n>
+</code-ref>
+
+<h2>De clave pública a dirección</h2>
+<p>Una «dirección» no existe dentro de la cadena de bloques: es sólo una forma cómoda de escribir un <b>script de bloqueo</b> (lo verás en el nivel 4). La cartera la convierte a texto con dos codificaciones:</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Empieza por</th><th>Tipo</th><th>Codificación</th><th>Contenido</th></tr></thead>
+<tbody>
+<tr><td><code>1…</code></td><td>P2PKH (2009)</td><td>Base58Check</td><td>HASH160 de la clave pública</td></tr>
+<tr><td><code>3…</code></td><td>P2SH (2012)</td><td>Base58Check</td><td>HASH160 de un script</td></tr>
+<tr><td><code>bc1q…</code></td><td>SegWit v0 (2017)</td><td>Bech32</td><td>HASH160 de la clave (20 bytes) o SHA-256 de un script (32 bytes)</td></tr>
+<tr><td><code>bc1p…</code></td><td>Taproot (2021)</td><td>Bech32m</td><td>Clave pública x-only «retocada» (32 bytes)</td></tr>
+</tbody></table></div>
+<code-ref file="src/key_io.cpp" start="std::string operator()(const PKHash& id) const" title="dirección P2PKH">
+  <n m="Base58Prefix(CChainParams::PUBKEY_ADDRESS)">El prefijo de versión: 0 en mainnet (por eso empiezan por «1»), 111 en testnet. Está en <code>kernel/chainparams.cpp</code>.</n>
+  <n m="data.insert(data.end(), id.begin(), id.end());">Detrás, los 20 bytes del HASH160.</n>
+  <n m="EncodeBase58Check(data);">Base58 con 4 bytes de checksum (para detectar errores al teclear). Base58 evita caracteres que se confunden: 0/O, I/l.</n>
+</code-ref>
+<code-ref file="src/key_io.cpp" start="std::string operator()(const WitnessV1Taproot& tap) const" title="dirección Taproot">
+  <n m="std::vector<unsigned char> data = {1};">Versión de testigo 1 = Taproot.</n>
+  <n m="ConvertBits<8, 5, true>">Bech32 trabaja con grupos de 5 bits (32 símbolos), así que se reagrupan los bytes.</n>
+  <n m="Encoding::BECH32M">Bech32m (BIP350) corrige un pequeño fallo de Bech32 original. «hrp» es la parte legible: <code>bc</code> en mainnet.</n>
+</code-ref>
+<div class="game" data-game="base58"></div>
+
+<div class="quiz" data-title="Test del nivel 2"><script type="application/json">[
+{"q":"¿Qué operación es fácil y cuál imposible en la práctica?","o":["Calcular k desde P es fácil; P desde k imposible","Calcular P = k·G es fácil; recuperar k desde P es imposible","Ambas son fáciles","Ambas son imposibles"],"a":1,"why":"Es el problema del logaritmo discreto en curvas elípticas."},
+{"q":"¿Por qué es crítico que el nonce de ECDSA no se repita?","o":["Por eficiencia","Porque con dos firmas con el mismo nonce se puede calcular la clave privada","Porque la firma ocuparía más","No es importante"],"a":1,"why":"Por eso CKey::Sign usa RFC6979, que lo deriva de forma determinista."},
+{"q":"¿Qué parte es crítica para el consenso?","o":["Generar claves","Firmar","Verificar firmas","Codificar direcciones"],"a":2,"why":"Todos los nodos deben verificar igual. Generar y firmar son cosas de la cartera de cada uno."},
+{"q":"¿Cuánto ocupa una firma Schnorr de Taproot?","o":["71-72 bytes","64 bytes (65 con sighash explícito)","33 bytes","20 bytes"],"a":1,"why":"R (32 bytes) + s (32 bytes). Opcionalmente un byte extra de tipo de sighash."},
+{"q":"¿Está la «dirección» guardada en la cadena de bloques?","o":["Sí, como texto","No: en la cadena está el script de bloqueo; la dirección es sólo una forma de escribirlo","Sólo en bloques antiguos","Sólo en Taproot"],"a":1,"why":"key_io.cpp traduce entre scripts y texto; el consenso sólo ve scripts."}
+]</script></div>

@@ -1,0 +1,1057 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nivel 6 · Validación: el corazón del consenso · Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="nivel-6">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html">3 · Transacciones</a></li>
+<li><a href="nivel-4.html">4 · Script</a></li>
+<li><a href="nivel-5.html">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html" class="active">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html">8 · Red P2P</a></li>
+<li><a href="nivel-9.html">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <div class="kicker">Nivel 6 · El corazón</div>
+<h1>Validación: el corazón del consenso</h1>
+<p class="lead">Este es el nivel más importante para auditar. Aquí se decide, regla a regla, si un bloque entra en tu cadena. Todo vive en <a class="srclink" href="explorador.html#f=src/validation.cpp">src/validation.cpp</a> (unas 6400 líneas). Lo recorreremos en el orden en que lo atraviesa un bloque recién llegado.</p>
+
+<h2>El viaje de un bloque</h2>
+<pre class="mermaid">
+flowchart TD
+  P["net_processing.cpp<br/>recibe mensaje «block»"] --> PNB["ProcessNewBlock"]
+  PNB --> CB["CheckBlock<br/>(sin contexto: PoW, Merkle,<br/>tamaño, coinbase, CheckTransaction)"]
+  CB -->|ok| AB["AcceptBlock"]
+  AB --> ABH["AcceptBlockHeader<br/>ContextualCheckBlockHeader<br/>(dificultad, tiempo, versión)"]
+  ABH --> CCB["ContextualCheckBlock<br/>(tx finales, altura en coinbase,<br/>compromiso de testigos, peso)"]
+  CCB --> W["Escribir en blk*.dat"]
+  W --> ABC["ActivateBestChain"]
+  ABC --> FMW["FindMostWorkChain<br/>¿qué punta tiene más trabajo?"]
+  FMW --> ABCS["ActivateBestChainStep"]
+  ABCS -->|"si hace falta reorganizar"| DT["DisconnectTip → DisconnectBlock<br/>(deshace con rev*.dat)"]
+  ABCS --> CT["ConnectTip → ConnectBlock<br/>(entradas, scripts, comisiones,<br/>actualiza UTXO)"]
+  CT --> TIP(("Nueva punta<br/>de la cadena"))
+</pre>
+<div class="callout"><span class="t">Dos tipos de comprobaciones</span>
+<p><b>Sin contexto</b> (<code>CheckBlock</code>, <code>CheckTransaction</code>): mirando sólo el bloque. Son baratas y se hacen primero. <b>Con contexto</b> (<code>Contextual…</code>, <code>ConnectBlock</code>): necesitan saber qué hay antes en la cadena (dificultad esperada, monedas sin gastar…).</p></div>
+
+<h2>1. ProcessNewBlock: la puerta de entrada</h2>
+<figure class="cref" id="c1" data-start="4446" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 4446–4494</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L4446-L4494" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=4446" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool ChainstateManager::ProcessNewBlock(const std::shared_ptr&lt;const CBlock&gt;&amp; block, bool force_processing, bool min_pow_checked, bool* new_block)
+{
+    AssertLockNotHeld(cs_main);
+
+    {
+        CBlockIndex *pindex = nullptr;
+        if (new_block) *new_block = false;
+        BlockValidationState state;
+
+        // CheckBlock() does not support multi-threaded block validation because CBlock::fChecked can cause data race.
+        // Therefore, the following critical section must include the CheckBlock() call as well.
+        LOCK(cs_main);
+
+        // Skipping AcceptBlock() for CheckBlock() failures means that we will never mark a block as invalid if
+        // CheckBlock() fails.  This is protective against consensus failure if there are any unknown forms of block
+        // malleability that cause CheckBlock() to fail; see e.g. CVE-2012-2459 and
+        // https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2019-February/016697.html.  Because CheckBlock() is
+        // not very expensive, the anti-DoS benefits of caching failure (of a definitely-invalid block) are not substantial.
+        bool ret = CheckBlock(*block, state, GetConsensus());
+        if (ret) {
+            // Store to disk
+            ret = AcceptBlock(block, state, &amp;pindex, force_processing, nullptr, new_block, min_pow_checked);
+        }
+        if (!ret) {
+            if (m_options.signals) {
+                m_options.signals-&gt;BlockChecked(block, state);
+            }
+            LogError(&quot;%s: AcceptBlock FAILED (%s)\n&quot;, __func__, state.ToString());
+            return false;
+        }
+    }
+
+    NotifyHeaderTip();
+
+    BlockValidationState state; // Only used to report errors, not invalidity - ignore it
+    if (!ActiveChainstate().ActivateBestChain(state, block)) {
+        LogError(&quot;%s: ActivateBestChain failed (%s)\n&quot;, __func__, state.ToString());
+        return false;
+    }
+
+    Chainstate* bg_chain{WITH_LOCK(cs_main, return HistoricalChainstate())};
+    BlockValidationState bg_state;
+    if (bg_chain &amp;&amp; !bg_chain-&gt;ActivateBestChain(bg_state, block)) {
+        LogError(&quot;%s: [background] ActivateBestChain failed (%s)\n&quot;, __func__, bg_state.ToString());
+        return false;
+     }
+
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 4457, "html": "<code>cs_main<\/code> es el gran candado del estado de la cadena: mientras se valida, ningún otro hilo puede tocarla."}, {"line": 4459, "html": "Decisión de diseño sutil: si <code>CheckBlock<\/code> falla, el bloque NO se marca como inválido para siempre. ¿Por qué? Porque un atacante podría modificar un bloque válido (maleabilidad, como CVE-2012-2459) sin cambiar su hash; si lo marcáramos inválido, rechazaríamos también el bloque bueno con ese hash."}, {"line": 4464, "html": "Comprobaciones baratas sin contexto."}, {"line": 4467, "html": "Si pasan: comprobaciones con contexto y guardar en disco."}, {"line": 4481, "html": "Después (ya sin el candado), intentar que la cadena activa avance o se reorganice."}, {"line": 4486, "html": "Si usas assumeutxo (nivel 7), hay una segunda cadena validándose en segundo plano desde el génesis."}]</script></figure>
+
+<h2>2. CheckBlock: comprobaciones sin contexto</h2>
+<figure class="cref" id="c2" data-start="3876" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 3876–3883</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L3876-L3883" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=3876" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static bool CheckBlockHeader(const CBlockHeader&amp; block, BlockValidationState&amp; state, const Consensus::Params&amp; consensusParams, bool fCheckPOW = true)
+{
+    // Check proof of work matches claimed amount
+    if (fCheckPOW &amp;&amp; !CheckProofOfWork(block.GetHash(), block.nBits, consensusParams))
+        return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER, &quot;high-hash&quot;, &quot;proof of work failed&quot;);
+
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 3879, "html": "Lo primero: ¿el hash cumple el objetivo que el propio bloque declara? (Si el objetivo es el correcto se comprueba después, con contexto.) Es la comprobación más barata para descartar basura."}]</script></figure>
+<figure class="cref" id="c3" data-start="3885" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 3885–3910</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L3885-L3910" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=3885" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static bool CheckMerkleRoot(const CBlock&amp; block, BlockValidationState&amp; state)
+{
+    if (block.m_checked_merkle_root) return true;
+
+    bool mutated;
+    uint256 merkle_root = BlockMerkleRoot(block, &amp;mutated);
+    if (block.hashMerkleRoot != merkle_root) {
+        return state.Invalid(
+            /*result=*/BlockValidationResult::BLOCK_MUTATED,
+            /*reject_reason=*/&quot;bad-txnmrklroot&quot;,
+            /*debug_message=*/&quot;hashMerkleRoot mismatch&quot;);
+    }
+
+    // Check for merkle tree malleability (CVE-2012-2459): repeating sequences
+    // of transactions in a block without affecting the merkle root of a block,
+    // while still invalidating it.
+    if (mutated) {
+        return state.Invalid(
+            /*result=*/BlockValidationResult::BLOCK_MUTATED,
+            /*reject_reason=*/&quot;bad-txns-duplicate&quot;,
+            /*debug_message=*/&quot;duplicate transaction&quot;);
+    }
+
+    block.m_checked_merkle_root = true;
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 3890, "html": "Recalcula la raíz de Merkle a partir de las transacciones recibidas."}, {"line": 3891, "html": "Debe coincidir con la de la cabecera: si no, las transacciones no son las que el minero comprometió."}, {"line": 3901, "html": "La defensa contra CVE-2012-2459 del nivel 5."}]</script></figure>
+<figure class="cref" id="c4" data-start="3966" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 3966–4031</span><span class="cref-title">el bloque completo, sin contexto</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L3966-L4031" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=3966" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool CheckBlock(const CBlock&amp; block, BlockValidationState&amp; state, const Consensus::Params&amp; consensusParams, bool fCheckPOW, bool fCheckMerkleRoot)
+{
+    // These are checks that are independent of context.
+
+    if (block.fChecked)
+        return true;
+
+    // Check that the header is valid (particularly PoW).  This is mostly
+    // redundant with the call in AcceptBlockHeader.
+    if (!CheckBlockHeader(block, state, consensusParams, fCheckPOW))
+        return false;
+
+    // Signet only: check block solution
+    if (consensusParams.signet_blocks &amp;&amp; fCheckPOW &amp;&amp; !CheckSignetBlockSolution(block, consensusParams)) {
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-signet-blksig&quot;, &quot;signet block signature validation failure&quot;);
+    }
+
+    // Check the merkle root.
+    if (fCheckMerkleRoot &amp;&amp; !CheckMerkleRoot(block, state)) {
+        return false;
+    }
+
+    // All potential-corruption validation must be done before we do any
+    // transaction validation, as otherwise we may mark the header as invalid
+    // because we receive the wrong transactions for it.
+    // Note that witness malleability is checked in ContextualCheckBlock, so no
+    // checks that use witness data may be performed here.
+
+    // Size limits
+    if (block.vtx.empty() || block.vtx.size() * WITNESS_SCALE_FACTOR &gt; MAX_BLOCK_WEIGHT || ::GetSerializeSize(TX_NO_WITNESS(block)) * WITNESS_SCALE_FACTOR &gt; MAX_BLOCK_WEIGHT)
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-blk-length&quot;, &quot;size limits failed&quot;);
+
+    // First transaction must be coinbase, the rest must not be
+    if (block.vtx.empty() || !block.vtx[0]-&gt;IsCoinBase())
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-cb-missing&quot;, &quot;first tx is not coinbase&quot;);
+    for (unsigned int i = 1; i &lt; block.vtx.size(); i++)
+        if (block.vtx[i]-&gt;IsCoinBase())
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-cb-multiple&quot;, &quot;more than one coinbase&quot;);
+
+    // Check transactions
+    // Must check for duplicate inputs (see CVE-2018-17144)
+    for (const auto&amp; tx : block.vtx) {
+        TxValidationState tx_state;
+        if (!CheckTransaction(*tx, tx_state)) {
+            // CheckBlock() does context-free validation checks. The only
+            // possible failures are consensus failures.
+            assert(tx_state.GetResult() == TxValidationResult::TX_CONSENSUS);
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, tx_state.GetRejectReason(),
+                                 strprintf(&quot;Transaction check failed (tx hash %s) %s&quot;, tx-&gt;GetHash().ToString(), tx_state.GetDebugMessage()));
+        }
+    }
+    // This underestimates the number of sigops, because unlike ConnectBlock it
+    // does not count witness and p2sh sigops.
+    unsigned int nSigOps = 0;
+    for (const auto&amp; tx : block.vtx)
+    {
+        nSigOps += GetLegacySigOpCount(*tx);
+    }
+    if (nSigOps * WITNESS_SCALE_FACTOR &gt; MAX_BLOCK_SIGOPS_COST)
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-blk-sigops&quot;, &quot;out-of-bounds SigOpCount&quot;);
+
+    if (fCheckPOW &amp;&amp; fCheckMerkleRoot)
+        block.fChecked = true;
+
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 3970, "html": "Caché: si ya se comprobó, no repetir."}, {"line": 3979, "html": "Sólo en signet (red de pruebas firmada)."}, {"line": 3984, "html": "Raíz de Merkle."}, {"line": 3988, "html": "Orden importante: primero lo que detecta corrupción/maleabilidad; luego lo que invalida de verdad."}, {"line": 3995, "html": "Tamaño: al menos una transacción y, sin contar testigos, no más del peso máximo."}, {"line": 3999, "html": "La primera transacción debe ser la coinbase…"}, {"line": 4002, "html": "…y sólo la primera."}, {"line": 4009, "html": "Cada transacción pasa CheckTransaction (nivel 3): incluye la comprobación de entradas duplicadas de CVE-2018-17144."}, {"line": 4022, "html": "Cuenta aproximada de operaciones de firma (las caras de verificar). Límite: 80 000 de «coste»."}, {"line": 4028, "html": "Marca como comprobado."}]</script></figure>
+
+<h2>3. AcceptBlockHeader: ¿encaja esta cabecera?</h2>
+<figure class="cref" id="c5" data-start="4234" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 4234–4287</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L4234-L4287" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=4234" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool ChainstateManager::AcceptBlockHeader(const CBlockHeader&amp; block, BlockValidationState&amp; state, CBlockIndex** ppindex, bool min_pow_checked)
+{
+    AssertLockHeld(cs_main);
+
+    // Check for duplicate
+    uint256 hash = block.GetHash();
+    BlockMap::iterator miSelf{m_blockman.m_block_index.find(hash)};
+    if (hash != GetConsensus().hashGenesisBlock) {
+        if (miSelf != m_blockman.m_block_index.end()) {
+            // Block header is already known.
+            CBlockIndex* pindex = &amp;(miSelf-&gt;second);
+            if (ppindex)
+                *ppindex = pindex;
+            if (pindex-&gt;nStatus &amp; BLOCK_FAILED_VALID) {
+                LogDebug(BCLog::VALIDATION, &quot;%s: block %s is marked invalid\n&quot;, __func__, hash.ToString());
+                return state.Invalid(BlockValidationResult::BLOCK_CACHED_INVALID, &quot;duplicate-invalid&quot;,
+                                     strprintf(&quot;block %s was previously marked invalid&quot;, hash.ToString()));
+            }
+            return true;
+        }
+
+        if (!CheckBlockHeader(block, state, GetConsensus())) {
+            LogDebug(BCLog::VALIDATION, &quot;%s: Consensus::CheckBlockHeader: %s, %s\n&quot;, __func__, hash.ToString(), state.ToString());
+            return false;
+        }
+
+        // Get prev block index
+        CBlockIndex* pindexPrev = nullptr;
+        BlockMap::iterator mi{m_blockman.m_block_index.find(block.hashPrevBlock)};
+        if (mi == m_blockman.m_block_index.end()) {
+            LogDebug(BCLog::VALIDATION, &quot;header %s has prev block not found: %s\n&quot;, hash.ToString(), block.hashPrevBlock.ToString());
+            return state.Invalid(BlockValidationResult::BLOCK_MISSING_PREV, &quot;prev-blk-not-found&quot;);
+        }
+        pindexPrev = &amp;((*mi).second);
+        if (pindexPrev-&gt;nStatus &amp; BLOCK_FAILED_VALID) {
+            LogDebug(BCLog::VALIDATION, &quot;header %s has prev block invalid: %s\n&quot;, hash.ToString(), block.hashPrevBlock.ToString());
+            return state.Invalid(BlockValidationResult::BLOCK_INVALID_PREV, &quot;bad-prevblk&quot;);
+        }
+        if (!ContextualCheckBlockHeader(block, state, m_blockman, *this, pindexPrev)) {
+            LogDebug(BCLog::VALIDATION, &quot;%s: Consensus::ContextualCheckBlockHeader: %s, %s\n&quot;, __func__, hash.ToString(), state.ToString());
+            return false;
+        }
+    }
+    if (!min_pow_checked) {
+        LogDebug(BCLog::VALIDATION, &quot;%s: not adding new block header %s, missing anti-dos proof-of-work validation\n&quot;, __func__, hash.ToString());
+        return state.Invalid(BlockValidationResult::BLOCK_HEADER_LOW_WORK, &quot;too-little-chainwork&quot;);
+    }
+    CBlockIndex* pindex{m_blockman.AddToBlockIndex(block, m_best_header)};
+
+    if (ppindex)
+        *ppindex = pindex;
+
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 4240, "html": "¿Ya conocemos esta cabecera?"}, {"line": 4247, "html": "Si ya sabemos que es inválida, se rechaza al instante."}, {"line": 4255, "html": "Prueba de trabajo."}, {"line": 4265, "html": "Debemos conocer el bloque anterior (las cabeceras se descargan en orden)."}, {"line": 4270, "html": "Si el padre es inválido, el hijo también."}, {"line": 4272, "html": "Reglas que dependen del padre (abajo)."}, {"line": 4277, "html": "Antidenegación de servicio: sólo se guardan cabeceras de cadenas que ya demostraron suficiente trabajo total (nivel 8, headerssync)."}, {"line": 4281, "html": "Se añade al índice de bloques en memoria (un <code>CBlockIndex<\/code>, nivel 7)."}]</script></figure>
+<figure class="cref" id="c6" data-start="4128" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 4128–4169</span><span class="cref-title">reglas de cabecera con contexto</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L4128-L4169" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=4128" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static bool ContextualCheckBlockHeader(const CBlockHeader&amp; block, BlockValidationState&amp; state, BlockManager&amp; blockman, const ChainstateManager&amp; chainman, const CBlockIndex* pindexPrev) EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
+{
+    AssertLockHeld(::cs_main);
+    assert(pindexPrev != nullptr);
+    const int nHeight = pindexPrev-&gt;nHeight + 1;
+
+    // Check proof of work
+    const Consensus::Params&amp; consensusParams = chainman.GetConsensus();
+    if (block.nBits != GetNextWorkRequired(pindexPrev, &amp;block, consensusParams))
+        return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER, &quot;bad-diffbits&quot;, &quot;incorrect proof of work&quot;);
+
+    // Check timestamp against prev
+    if (block.GetBlockTime() &lt;= pindexPrev-&gt;GetMedianTimePast())
+        return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER, &quot;time-too-old&quot;, &quot;block&#x27;s timestamp is too early&quot;);
+
+    // Testnet4 and regtest only: Check timestamp against prev for difficulty-adjustment
+    // blocks to prevent timewarp attacks (see https://github.com/bitcoin/bitcoin/pull/15482).
+    if (consensusParams.enforce_BIP94) {
+        // Check timestamp for the first block of each difficulty adjustment
+        // interval, except the genesis block.
+        if (nHeight % consensusParams.DifficultyAdjustmentInterval() == 0) {
+            if (block.GetBlockTime() &lt; pindexPrev-&gt;GetBlockTime() - MAX_TIMEWARP) {
+                return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER, &quot;time-timewarp-attack&quot;, &quot;block&#x27;s timestamp is too early on diff adjustment block&quot;);
+            }
+        }
+    }
+
+    // Check timestamp
+    if (block.Time() &gt; NodeClock::now() + std::chrono::seconds{MAX_FUTURE_BLOCK_TIME}) {
+        return state.Invalid(BlockValidationResult::BLOCK_TIME_FUTURE, &quot;time-too-new&quot;, &quot;block timestamp too far in the future&quot;);
+    }
+
+    // Reject blocks with outdated version
+    if ((block.nVersion &lt; 2 &amp;&amp; DeploymentActiveAfter(pindexPrev, chainman, Consensus::DEPLOYMENT_HEIGHTINCB)) ||
+        (block.nVersion &lt; 3 &amp;&amp; DeploymentActiveAfter(pindexPrev, chainman, Consensus::DEPLOYMENT_DERSIG)) ||
+        (block.nVersion &lt; 4 &amp;&amp; DeploymentActiveAfter(pindexPrev, chainman, Consensus::DEPLOYMENT_CLTV))) {
+            return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER, strprintf(&quot;bad-version(0x%08x)&quot;, block.nVersion),
+                                 strprintf(&quot;rejected nVersion=0x%08x block&quot;, block.nVersion));
+    }
+
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 4136, "html": "La dificultad declarada debe ser <b>exactamente<\/b> la que toca según el ajuste del nivel 5. Sin esto, un minero declararía una dificultad facilísima."}, {"line": 4140, "html": "El tiempo debe ser mayor que la <b>mediana<\/b> de los 11 bloques anteriores (no del anterior: los relojes de los mineros no están sincronizados)."}, {"line": 4145, "html": "Regla anti-timewarp: sólo en testnet4/regtest por ahora."}, {"line": 4156, "html": "No más de 2 horas en el futuro según tu reloj. Ojo: no es una regla de consenso «pura» (depende de tu reloj), por eso devuelve BLOCK_TIME_FUTURE y el bloque puede aceptarse más tarde."}, {"line": 4161, "html": "Tras los soft forks BIP34/66/65, los bloques con versión antigua se rechazan."}]</script></figure>
+
+<h2>4. ContextualCheckBlock y AcceptBlock</h2>
+<figure class="cref" id="c7" data-start="4177" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 4177–4232</span><span class="cref-title">reglas del bloque con contexto</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L4177-L4232" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=4177" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static bool ContextualCheckBlock(const CBlock&amp; block, BlockValidationState&amp; state, const ChainstateManager&amp; chainman, const CBlockIndex* pindexPrev)
+{
+    const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev-&gt;nHeight + 1;
+
+    // Enforce BIP113 (Median Time Past).
+    bool enforce_locktime_median_time_past{false};
+    if (DeploymentActiveAfter(pindexPrev, chainman, Consensus::DEPLOYMENT_CSV)) {
+        assert(pindexPrev != nullptr);
+        enforce_locktime_median_time_past = true;
+    }
+
+    const int64_t nLockTimeCutoff{enforce_locktime_median_time_past ?
+                                      pindexPrev-&gt;GetMedianTimePast() :
+                                      block.GetBlockTime()};
+
+    // Check that all transactions are finalized
+    for (const auto&amp; tx : block.vtx) {
+        if (!IsFinalTx(*tx, nHeight, nLockTimeCutoff)) {
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-txns-nonfinal&quot;, &quot;non-final transaction&quot;);
+        }
+    }
+
+    // Enforce rule that the coinbase starts with serialized block height
+    if (DeploymentActiveAfter(pindexPrev, chainman, Consensus::DEPLOYMENT_HEIGHTINCB))
+    {
+        CScript expect = CScript() &lt;&lt; nHeight;
+        if (block.vtx[0]-&gt;vin[0].scriptSig.size() &lt; expect.size() ||
+            !std::equal(expect.begin(), expect.end(), block.vtx[0]-&gt;vin[0].scriptSig.begin())) {
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-cb-height&quot;, &quot;block height mismatch in coinbase&quot;);
+        }
+    }
+
+    // Validation for witness commitments.
+    // * We compute the witness hash (which is the hash including witnesses) of all the block&#x27;s transactions, except the
+    //   coinbase (where 0x0000....0000 is used instead).
+    // * The coinbase scriptWitness is a stack of a single 32-byte vector, containing a witness reserved value (unconstrained).
+    // * We build a merkle tree with all those witness hashes as leaves (similar to the hashMerkleRoot in the block header).
+    // * There must be at least one output whose scriptPubKey is a single 36-byte push, the first 4 bytes of which are
+    //   {0xaa, 0x21, 0xa9, 0xed}, and the following 32 bytes are SHA256^2(witness root, witness reserved value). In case there are
+    //   multiple, the last one is used.
+    if (!CheckWitnessMalleation(block, DeploymentActiveAfter(pindexPrev, chainman, Consensus::DEPLOYMENT_SEGWIT), state)) {
+        return false;
+    }
+
+    // After the coinbase witness reserved value and commitment are verified,
+    // we can check if the block weight passes (before we&#x27;ve checked the
+    // coinbase witness, it would be possible for the weight to be too
+    // large by filling up the coinbase witness, which doesn&#x27;t change
+    // the block hash, so we couldn&#x27;t mark the block as permanently
+    // failed).
+    if (GetBlockWeight(block) &gt; MAX_BLOCK_WEIGHT) {
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-blk-weight&quot;, strprintf(&quot;%s : weight limit failed&quot;, __func__));
+    }
+
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 4181, "html": "Los bloqueos de tiempo se comparan con la mediana de tiempo pasado (BIP113), no con el tiempo del bloque, para que los mineros no puedan adelantarlo."}, {"line": 4194, "html": "Todas las transacciones deben ser «finales» (nLockTime cumplido)."}, {"line": 4202, "html": "BIP34: la coinbase debe empezar por la altura del bloque. Así dos coinbases nunca son idénticas (y no tienen el mismo txid)."}, {"line": 4217, "html": "SegWit: la coinbase contiene un compromiso (en una salida OP_RETURN que empieza por <code>aa21a9ed<\/code>) con la raíz de Merkle de los wtxid. Así los testigos también quedan sellados por la prueba de trabajo."}, {"line": 4227, "html": "Peso total ≤ 4 000 000 (se comprueba después del compromiso para no marcar inválido un bloque al que alguien añadió basura en el testigo de la coinbase)."}]</script></figure>
+<figure class="cref" id="c8" data-start="4346" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 4346–4444</span><span class="cref-title">aceptar y guardar</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L4346-L4444" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=4346" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool ChainstateManager::AcceptBlock(const std::shared_ptr&lt;const CBlock&gt;&amp; pblock, BlockValidationState&amp; state, CBlockIndex** ppindex, bool fRequested, const FlatFilePos* dbp, bool* fNewBlock, bool min_pow_checked)
+{
+    const CBlock&amp; block = *pblock;
+
+    if (fNewBlock) *fNewBlock = false;
+    AssertLockHeld(cs_main);
+
+    CBlockIndex *pindexDummy = nullptr;
+    CBlockIndex *&amp;pindex = ppindex ? *ppindex : pindexDummy;
+
+    bool accepted_header{AcceptBlockHeader(block, state, &amp;pindex, min_pow_checked)};
+    CheckBlockIndex();
+
+    if (!accepted_header)
+        return false;
+
+    // Check all requested blocks that we do not already have for validity and
+    // save them to disk. Skip processing of unrequested blocks as an anti-DoS
+    // measure, unless the blocks have more work than the active chain tip, and
+    // aren&#x27;t too far ahead of it, so are likely to be attached soon.
+    bool fAlreadyHave = pindex-&gt;nStatus &amp; BLOCK_HAVE_DATA;
+    bool fHasMoreOrSameWork = (ActiveTip() ? pindex-&gt;nChainWork &gt;= ActiveTip()-&gt;nChainWork : true);
+    // Blocks that are too out-of-order needlessly limit the effectiveness of
+    // pruning, because pruning will not delete block files that contain any
+    // blocks which are too close in height to the tip.  Apply this test
+    // regardless of whether pruning is enabled; it should generally be safe to
+    // not process unrequested blocks.
+    bool fTooFarAhead{pindex-&gt;nHeight &gt; ActiveHeight() + int(MIN_BLOCKS_TO_KEEP)};
+
+    // TODO: Decouple this function from the block download logic by removing fRequested
+    // This requires some new chain data structure to efficiently look up if a
+    // block is in a chain leading to a candidate for best tip, despite not
+    // being such a candidate itself.
+    // Note that this would break the getblockfrompeer RPC
+
+    // TODO: deal better with return value and error conditions for duplicate
+    // and unrequested blocks.
+    if (fAlreadyHave) return true;
+    if (!fRequested) {  // If we didn&#x27;t ask for it:
+        if (pindex-&gt;nTx != 0) return true;    // This is a previously-processed block that was pruned
+        if (!fHasMoreOrSameWork) return true; // Don&#x27;t process less-work chains
+        if (fTooFarAhead) return true;        // Block height is too high
+
+        // Protect against DoS attacks from low-work chains.
+        // If our tip is behind, a peer could try to send us
+        // low-work blocks on a fake chain that we would never
+        // request; don&#x27;t process these.
+        if (pindex-&gt;nChainWork &lt; MinimumChainWork()) return true;
+    }
+
+    const CChainParams&amp; params{GetParams()};
+
+    if (!CheckBlock(block, state, params.GetConsensus()) ||
+        !ContextualCheckBlock(block, state, *this, pindex-&gt;pprev)) {
+        if (Assume(state.IsInvalid())) {
+            ActiveChainstate().InvalidBlockFound(pindex, state);
+        }
+        LogError(&quot;%s: %s\n&quot;, __func__, state.ToString());
+        return false;
+    }
+
+    // Header is valid/has work, merkle tree and segwit merkle tree are good...RELAY NOW
+    // (but if it does not build on our best tip, let the SendMessages loop relay it)
+    if (!IsInitialBlockDownload() &amp;&amp; ActiveTip() == pindex-&gt;pprev &amp;&amp; m_options.signals) {
+        m_options.signals-&gt;NewPoWValidBlock(pindex, pblock);
+    }
+
+    // Write block to history file
+    if (fNewBlock) *fNewBlock = true;
+    try {
+        FlatFilePos blockPos{};
+        if (dbp) {
+            blockPos = *dbp;
+            m_blockman.UpdateBlockInfo(block, pindex-&gt;nHeight, blockPos);
+        } else {
+            blockPos = m_blockman.WriteBlock(block, pindex-&gt;nHeight);
+            if (blockPos.IsNull()) {
+                state.Error(strprintf(&quot;%s: Failed to find position to write new block to disk&quot;, __func__));
+                return false;
+            }
+        }
+        ReceivedBlockTransactions(block, pindex, blockPos);
+    } catch (const std::runtime_error&amp; e) {
+        return FatalError(GetNotifications(), state, strprintf(_(&quot;System error while saving block to disk: %s&quot;), e.what()));
+    }
+
+    // TODO: FlushStateToDisk() handles flushing of both block and chainstate
+    // data, so we should move this to ChainstateManager so that we can be more
+    // intelligent about how we flush.
+    // For now, since FlushStateMode::NONE is used, all that can happen is that
+    // the block files may be pruned, so we can just call this on one
+    // chainstate (particularly if we haven&#x27;t implemented pruning with
+    // background validation yet).
+    ActiveChainstate().FlushStateToDisk(state, FlushStateMode::NONE);
+
+    CheckBlockIndex();
+
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 4356, "html": "Primero la cabecera."}, {"line": 4383, "html": "Si ya tenemos el bloque, nada que hacer."}, {"line": 4384, "html": "Antidenegación de servicio: los bloques que no pedimos sólo se procesan si tienen al menos tanto trabajo como nuestra punta, no están demasiado adelantados y superan el trabajo mínimo."}, {"line": 4399, "html": "Comprobaciones completas…"}, {"line": 4401, "html": "…y si fallan (de forma no maleable), el bloque queda marcado como inválido para siempre."}, {"line": 4410, "html": "Optimización de red: si encaja en nuestra punta, avisamos a los pares (compact blocks) antes incluso de validar las firmas."}, {"line": 4421, "html": "Se escribe en el archivo <code>blk?????.dat<\/code>."}, {"line": 4427, "html": "Se anota que tenemos los datos y, si todos sus antepasados también, el bloque pasa a ser candidato a punta."}]</script></figure>
+
+<h2>5. Elegir la mejor cadena</h2>
+<div class="callout bad"><span class="t">La regla de oro: más trabajo, no más larga</span><p>El nodo sigue la cadena válida con <b>más trabajo acumulado</b> (<code>nChainWork</code>, la suma de la dificultad esperada de cada bloque). Una cadena más larga pero de dificultad menor pierde. Así un atacante no puede «inventarse» una cadena larga con poca dificultad.</p></div>
+<figure class="cref" id="c9" data-start="3161" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 3161–3218</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L3161-L3218" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=3161" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">CBlockIndex* Chainstate::FindMostWorkChain()
+{
+    AssertLockHeld(::cs_main);
+    do {
+        CBlockIndex *pindexNew = nullptr;
+
+        // Find the best candidate header.
+        {
+            std::set&lt;CBlockIndex*, CBlockIndexWorkComparator&gt;::reverse_iterator it = setBlockIndexCandidates.rbegin();
+            if (it == setBlockIndexCandidates.rend())
+                return nullptr;
+            pindexNew = *it;
+        }
+
+        // Check whether all blocks on the path between the currently active chain and the candidate are valid.
+        // Just going until the active chain is an optimization, as we know all blocks in it are valid already.
+        CBlockIndex *pindexTest = pindexNew;
+        bool fInvalidAncestor = false;
+        while (pindexTest &amp;&amp; !m_chain.Contains(pindexTest)) {
+            assert(pindexTest-&gt;HaveNumChainTxs() || pindexTest-&gt;nHeight == 0);
+
+            // Pruned nodes may have entries in setBlockIndexCandidates for
+            // which block files have been deleted.  Remove those as candidates
+            // for the most work chain if we come across them; we can&#x27;t switch
+            // to a chain unless we have all the non-active-chain parent blocks.
+            bool fFailedChain = pindexTest-&gt;nStatus &amp; BLOCK_FAILED_VALID;
+            bool fMissingData = !(pindexTest-&gt;nStatus &amp; BLOCK_HAVE_DATA);
+            if (fFailedChain || fMissingData) {
+                // Candidate chain is not usable (either invalid or missing data)
+                if (fFailedChain &amp;&amp; (m_chainman.m_best_invalid == nullptr || pindexNew-&gt;nChainWork &gt; m_chainman.m_best_invalid-&gt;nChainWork)) {
+                    m_chainman.m_best_invalid = pindexNew;
+                }
+                CBlockIndex *pindexFailed = pindexNew;
+                // Remove the entire chain from the set.
+                while (pindexTest != pindexFailed) {
+                    if (fFailedChain) {
+                        pindexFailed-&gt;nStatus |= BLOCK_FAILED_VALID;
+                        m_blockman.m_dirty_blockindex.insert(pindexFailed);
+                    } else if (fMissingData) {
+                        // If we&#x27;re missing data, then add back to m_blocks_unlinked,
+                        // so that if the block arrives in the future we can try adding
+                        // to setBlockIndexCandidates again.
+                        m_blockman.m_blocks_unlinked.insert(
+                            std::make_pair(pindexFailed-&gt;pprev, pindexFailed));
+                    }
+                    setBlockIndexCandidates.erase(pindexFailed);
+                    pindexFailed = pindexFailed-&gt;pprev;
+                }
+                setBlockIndexCandidates.erase(pindexTest);
+                fInvalidAncestor = true;
+                break;
+            }
+            pindexTest = pindexTest-&gt;pprev;
+        }
+        if (!fInvalidAncestor)
+            return pindexNew;
+    } while(true);
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 3169, "html": "Los candidatos están ordenados por trabajo (y, a igualdad, por orden de llegada). Se coge el mejor."}, {"line": 3179, "html": "Se recorre hacia atrás hasta enlazar con la cadena activa…"}, {"line": 3186, "html": "…comprobando que ningún antepasado sea inválido…"}, {"line": 3187, "html": "…ni nos falten datos."}, {"line": 3206, "html": "Si algo falla, toda esa rama deja de ser candidata y se prueba con la siguiente."}]</script></figure>
+<figure class="cref" id="c10" data-start="3238" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 3238–3321</span><span class="cref-title">reorganizar si hace falta</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L3238-L3321" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=3238" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool Chainstate::ActivateBestChainStep(BlockValidationState&amp; state, CBlockIndex* pindexMostWork, const std::shared_ptr&lt;const CBlock&gt;&amp; pblock, bool&amp; fInvalidFound, ConnectTrace&amp; connectTrace)
+{
+    AssertLockHeld(cs_main);
+    if (m_mempool) AssertLockHeld(m_mempool-&gt;cs);
+
+    const CBlockIndex* pindexOldTip = m_chain.Tip();
+    const CBlockIndex* pindexFork = m_chain.FindFork(pindexMostWork);
+
+    // Disconnect active blocks which are no longer in the best chain.
+    bool fBlocksDisconnected = false;
+    DisconnectedBlockTransactions disconnectpool{MAX_DISCONNECTED_TX_POOL_BYTES};
+    while (m_chain.Tip() &amp;&amp; m_chain.Tip() != pindexFork) {
+        if (!DisconnectTip(state, &amp;disconnectpool)) {
+            // This is likely a fatal error, but keep the mempool consistent,
+            // just in case. Only remove from the mempool in this case.
+            MaybeUpdateMempoolForReorg(disconnectpool, false);
+
+            // If we&#x27;re unable to disconnect a block during normal operation,
+            // then that is a failure of our local system -- we should abort
+            // rather than stay on a less work chain.
+            FatalError(m_chainman.GetNotifications(), state, _(&quot;Failed to disconnect block.&quot;));
+            return false;
+        }
+        fBlocksDisconnected = true;
+    }
+
+    // Build list of new blocks to connect (in descending height order).
+    std::vector&lt;CBlockIndex*&gt; vpindexToConnect;
+    bool fContinue = true;
+    int nHeight = pindexFork ? pindexFork-&gt;nHeight : -1;
+    while (fContinue &amp;&amp; nHeight != pindexMostWork-&gt;nHeight) {
+        // Don&#x27;t iterate the entire list of potential improvements toward the best tip, as we likely only need
+        // a few blocks along the way.
+        int nTargetHeight = std::min(nHeight + 32, pindexMostWork-&gt;nHeight);
+        vpindexToConnect.clear();
+        vpindexToConnect.reserve(nTargetHeight - nHeight);
+        CBlockIndex* pindexIter = pindexMostWork-&gt;GetAncestor(nTargetHeight);
+        while (pindexIter &amp;&amp; pindexIter-&gt;nHeight != nHeight) {
+            vpindexToConnect.push_back(pindexIter);
+            pindexIter = pindexIter-&gt;pprev;
+        }
+        nHeight = nTargetHeight;
+
+        // Connect new blocks.
+        for (CBlockIndex* pindexConnect : vpindexToConnect | std::views::reverse) {
+            if (!ConnectTip(state, pindexConnect, pindexConnect == pindexMostWork ? pblock : std::shared_ptr&lt;const CBlock&gt;(), connectTrace, disconnectpool)) {
+                if (state.IsInvalid()) {
+                    // The block violates a consensus rule.
+                    if (state.GetResult() != BlockValidationResult::BLOCK_MUTATED) {
+                        InvalidChainFound(vpindexToConnect.front());
+                    }
+                    state = BlockValidationState();
+                    fInvalidFound = true;
+                    fContinue = false;
+                    break;
+                } else {
+                    // A system error occurred (disk space, database error, ...).
+                    // Make the mempool consistent with the current tip, just in case
+                    // any observers try to use it before shutdown.
+                    MaybeUpdateMempoolForReorg(disconnectpool, false);
+                    return false;
+                }
+            } else {
+                PruneBlockIndexCandidates();
+                if (!pindexOldTip || m_chain.Tip()-&gt;nChainWork &gt; pindexOldTip-&gt;nChainWork) {
+                    // We&#x27;re in a better position than we were. Return temporarily to release the lock.
+                    fContinue = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (fBlocksDisconnected) {
+        // If any blocks were disconnected, disconnectpool may be non empty.  Add
+        // any disconnected transactions back to the mempool.
+        MaybeUpdateMempoolForReorg(disconnectpool, true);
+    }
+    if (m_mempool) m_mempool-&gt;check(this-&gt;CoinsTip(), this-&gt;m_chain.Height() + 1);
+
+    CheckForkWarningConditions();
+
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 3244, "html": "Punto común entre la cadena actual y la nueva."}, {"line": 3249, "html": "Desconecta bloques de la punta actual hasta llegar a ese punto (esto es una «reorganización»)."}, {"line": 3258, "html": "Si no puede deshacer un bloque, es un fallo del disco/sistema: el nodo se detiene antes que seguir en una cadena peor."}, {"line": 3271, "html": "Conecta de 32 en 32 bloques para no retener el candado demasiado."}, {"line": 3283, "html": "Conecta cada bloque nuevo."}, {"line": 3287, "html": "Si uno es inválido, se marca toda esa rama."}]</script></figure>
+<div class="game" data-game="chainsel"></div>
+
+<figure class="cref" id="c11" data-start="3052" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 3052–3155</span><span class="cref-title">conectar un bloque a la punta</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L3052-L3155" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=3052" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool Chainstate::ConnectTip(
+    BlockValidationState&amp; state,
+    CBlockIndex* pindexNew,
+    std::shared_ptr&lt;const CBlock&gt; block_to_connect,
+    ConnectTrace&amp; connectTrace,
+    DisconnectedBlockTransactions&amp; disconnectpool)
+{
+    AssertLockHeld(cs_main);
+    if (m_mempool) AssertLockHeld(m_mempool-&gt;cs);
+
+    assert(pindexNew-&gt;pprev == m_chain.Tip());
+    // Read block from disk.
+    const auto time_1{SteadyClock::now()};
+    if (!block_to_connect) {
+        std::shared_ptr&lt;CBlock&gt; pblockNew = std::make_shared&lt;CBlock&gt;();
+        if (!m_blockman.ReadBlock(*pblockNew, *pindexNew)) {
+            return FatalError(m_chainman.GetNotifications(), state, _(&quot;Failed to read block.&quot;));
+        }
+        block_to_connect = std::move(pblockNew);
+    } else {
+        LogDebug(BCLog::BENCH, &quot;  - Using cached block\n&quot;);
+    }
+    // Apply the block atomically to the chain state.
+    const auto time_2{SteadyClock::now()};
+    SteadyClock::time_point time_3;
+    // When adding aggregate statistics in the future, keep in mind that
+    // num_blocks_total may be zero until the ConnectBlock() call below.
+    LogDebug(BCLog::BENCH, &quot;  - Load block from disk: %.2fms\n&quot;,
+             Ticks&lt;MillisecondsDouble&gt;(time_2 - time_1));
+    {
+        CCoinsViewCache&amp; view{*m_coins_views-&gt;m_connect_block_view};
+        const auto reset_guard{view.CreateResetGuard()};
+        bool rv = ConnectBlock(*block_to_connect, state, pindexNew, view);
+        if (m_chainman.m_options.signals) {
+            m_chainman.m_options.signals-&gt;BlockChecked(block_to_connect, state);
+        }
+        if (!rv) {
+            if (state.IsInvalid())
+                InvalidBlockFound(pindexNew, state);
+            LogError(&quot;%s: ConnectBlock %s failed, %s\n&quot;, __func__, pindexNew-&gt;GetBlockHash().ToString(), state.ToString());
+            return false;
+        }
+        time_3 = SteadyClock::now();
+        m_chainman.time_connect_total += time_3 - time_2;
+        assert(m_chainman.num_blocks_total &gt; 0);
+        LogDebug(BCLog::BENCH, &quot;  - Connect total: %.2fms [%.2fs (%.2fms/blk)]\n&quot;,
+                 Ticks&lt;MillisecondsDouble&gt;(time_3 - time_2),
+                 Ticks&lt;SecondsDouble&gt;(m_chainman.time_connect_total),
+                 Ticks&lt;MillisecondsDouble&gt;(m_chainman.time_connect_total) / m_chainman.num_blocks_total);
+        view.Flush(/*reallocate_cache=*/false); // No need to reallocate since it only has capacity for 1 block
+    }
+    const auto time_4{SteadyClock::now()};
+    m_chainman.time_flush += time_4 - time_3;
+    LogDebug(BCLog::BENCH, &quot;  - Flush: %.2fms [%.2fs (%.2fms/blk)]\n&quot;,
+             Ticks&lt;MillisecondsDouble&gt;(time_4 - time_3),
+             Ticks&lt;SecondsDouble&gt;(m_chainman.time_flush),
+             Ticks&lt;MillisecondsDouble&gt;(m_chainman.time_flush) / m_chainman.num_blocks_total);
+    // Write the chain state to disk, if necessary.
+    if (!FlushStateToDisk(state, FlushStateMode::IF_NEEDED)) {
+        return false;
+    }
+    const auto time_5{SteadyClock::now()};
+    m_chainman.time_chainstate += time_5 - time_4;
+    LogDebug(BCLog::BENCH, &quot;  - Writing chainstate: %.2fms [%.2fs (%.2fms/blk)]\n&quot;,
+             Ticks&lt;MillisecondsDouble&gt;(time_5 - time_4),
+             Ticks&lt;SecondsDouble&gt;(m_chainman.time_chainstate),
+             Ticks&lt;MillisecondsDouble&gt;(m_chainman.time_chainstate) / m_chainman.num_blocks_total);
+    // Remove conflicting transactions from the mempool.;
+    if (m_mempool) {
+        m_mempool-&gt;removeForBlock(block_to_connect-&gt;vtx, pindexNew-&gt;nHeight);
+        disconnectpool.removeForBlock(block_to_connect-&gt;vtx);
+    }
+    // Update m_chain &amp; related variables.
+    m_chain.SetTip(*pindexNew);
+    m_chainman.UpdateIBDStatus();
+    UpdateTip(pindexNew);
+
+    const auto time_6{SteadyClock::now()};
+    m_chainman.time_post_connect += time_6 - time_5;
+    m_chainman.time_total += time_6 - time_1;
+    LogDebug(BCLog::BENCH, &quot;  - Connect postprocess: %.2fms [%.2fs (%.2fms/blk)]\n&quot;,
+             Ticks&lt;MillisecondsDouble&gt;(time_6 - time_5),
+             Ticks&lt;SecondsDouble&gt;(m_chainman.time_post_connect),
+             Ticks&lt;MillisecondsDouble&gt;(m_chainman.time_post_connect) / m_chainman.num_blocks_total);
+    LogDebug(BCLog::BENCH, &quot;- Connect block: %.2fms [%.2fs (%.2fms/blk)]\n&quot;,
+             Ticks&lt;MillisecondsDouble&gt;(time_6 - time_1),
+             Ticks&lt;SecondsDouble&gt;(m_chainman.time_total),
+             Ticks&lt;MillisecondsDouble&gt;(m_chainman.time_total) / m_chainman.num_blocks_total);
+
+    // See if this chainstate has reached a target block and can be used to
+    // validate an assumeutxo snapshot. If it can, hashing the UTXO database
+    // will be slow, and cs_main could remain locked here for several minutes.
+    // If the snapshot is validated, the UTXO hash will be saved to
+    // this-&gt;m_target_utxohash, causing HistoricalChainstate() to return null
+    // and this chainstate to no longer be used. ActivateBestChain() will also
+    // stop connecting blocks to this chainstate because this-&gt;ReachedTarget()
+    // will be true and this-&gt;setBlockIndexCandidates will not have additional
+    // blocks.
+    Chainstate&amp; current_cs{m_chainman.CurrentChainstate()};
+    m_chainman.MaybeValidateSnapshot(*this, current_cs);
+
+    connectTrace.BlockConnected(pindexNew, std::move(block_to_connect));
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 3062, "html": "Sólo se puede conectar encima de la punta actual."}, {"line": 3067, "html": "Si no lo tenemos en memoria, se lee del disco."}, {"line": 3084, "html": "La validación completa (abajo), sobre una vista temporal del UTXO."}, {"line": 3101, "html": "Sólo si todo fue bien, los cambios se aplican a la caché principal (todo o nada)."}, {"line": 3121, "html": "Las transacciones confirmadas (y las que entran en conflicto con ellas) salen de la mempool."}, {"line": 3125, "html": "¡Nueva punta!"}]</script></figure>
+
+<h2>6. ConnectBlock: la validación completa</h2>
+<p>Esta función (unas 360 líneas) es donde se comprueba que cada moneda existe, que cada firma es correcta y que nadie crea dinero. La vemos por partes.</p>
+<h3>6a. AssumeValid: ¿hay que verificar las firmas?</h3>
+<figure class="cref" id="c12" data-start="2349" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 2349–2385</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L2349-L2385" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=2349" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">    const char* script_check_reason;
+    if (m_chainman.AssumedValidBlock().IsNull()) {
+        script_check_reason = &quot;assumevalid=0 (always verify)&quot;;
+    } else {
+        constexpr int64_t TWO_WEEKS_IN_SECONDS{60 * 60 * 24 * 7 * 2};
+        // We&#x27;ve been configured with the hash of a block which has been externally verified to have a valid history.
+        // A suitable default value is included with the software and updated from time to time.  Because validity
+        //  relative to a piece of software is an objective fact these defaults can be easily reviewed.
+        // This setting doesn&#x27;t force the selection of any particular chain but makes validating some faster by
+        //  effectively caching the result of part of the verification.
+        BlockMap::const_iterator it{m_blockman.m_block_index.find(m_chainman.AssumedValidBlock())};
+        if (it == m_blockman.m_block_index.end()) {
+            script_check_reason = &quot;assumevalid hash not in headers&quot;;
+        } else if (it-&gt;second.GetAncestor(pindex-&gt;nHeight) != pindex) {
+            script_check_reason = (pindex-&gt;nHeight &gt; it-&gt;second.nHeight) ? &quot;block height above assumevalid height&quot; : &quot;block not in assumevalid chain&quot;;
+        } else if (m_chainman.m_best_header-&gt;GetAncestor(pindex-&gt;nHeight) != pindex) {
+            script_check_reason = &quot;block not in best header chain&quot;;
+        } else if (m_chainman.m_best_header-&gt;nChainWork &lt; m_chainman.MinimumChainWork()) {
+            script_check_reason = &quot;best header chainwork below minimumchainwork&quot;;
+        } else if (GetBlockProofEquivalentTime(*m_chainman.m_best_header, *pindex, *m_chainman.m_best_header, params.GetConsensus()) &lt;= TWO_WEEKS_IN_SECONDS) {
+            script_check_reason = &quot;block too recent relative to best header&quot;;
+        } else {
+            // This block is a member of the assumed verified chain and an ancestor of the best header.
+            // Script verification is skipped when connecting blocks under the
+            //  assumevalid block. Assuming the assumevalid block is valid this
+            //  is safe because block merkle hashes are still computed and checked,
+            // Of course, if an assumed valid block is invalid due to false scriptSigs
+            //  this optimization would allow an invalid chain to be accepted.
+            // The equivalent time check discourages hash power from extorting the network via DOS attack
+            //  into accepting an invalid block through telling users they must manually set assumevalid.
+            //  Requiring a software change or burying the invalid block, regardless of the setting, makes
+            //  it hard to hide the implication of the demand. This also avoids having release candidates
+            //  that are hardly doing any signature verification at all in testing without having to
+            //  artificially set the default assumed verified block further back.
+            // The test against the minimum chain work prevents the skipping when denied access to any chain at
+            //  least as good as the expected chain.
+            script_check_reason = nullptr;</code></pre><script type="application/json" class="cref-notes">[{"line": 2350, "html": "Con <code>-assumevalid=0<\/code> se verifica TODO, siempre. Es la opción para auditores máximos."}, {"line": 2355, "html": "El código trae un hash de bloque «asumido válido» (<code>defaultAssumeValid<\/code> en chainparams). Las firmas de los bloques anteriores a él <b>no se verifican<\/b> para acelerar la descarga inicial…"}, {"line": 2362, "html": "…pero sólo si el bloque es antepasado de ese hash, si está en la cadena de cabeceras con más trabajo, si esa cadena supera <code>nMinimumChainWork<\/code> y si quedan al menos dos semanas de trabajo encima."}, {"line": 2372, "html": "Ojo: TODO lo demás se sigue comprobando (Merkle, montos, doble gasto, UTXO). Sólo se omiten los scripts. Y el valor por defecto es público y revisable en cada versión: si no te fías, usa <code>-assumevalid=0<\/code>."}]</script></figure>
+<h3>6b. BIP30: transacciones duplicadas</h3>
+<figure class="cref" id="c13" data-start="2471" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 2471–2476</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L2471-L2476" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=2471" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">    if (fEnforceBIP30 || pindex-&gt;nHeight &gt;= BIP34_IMPLIES_BIP30_LIMIT) {
+        for (const auto&amp; tx : block.vtx) {
+            for (size_t o = 0; o &lt; tx-&gt;vout.size(); o++) {
+                if (view.HaveCoin(COutPoint(tx-&gt;GetHash(), o))) {
+                    state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-txns-BIP30&quot;,
+                                  &quot;tried to overwrite transaction&quot;);</code></pre><script type="application/json" class="cref-notes">[{"line": 2474, "html": "Un bloque no puede crear una salida con un txid:índice que ya exista sin gastar. En 2010 hubo dos coinbases idénticas (bloques 91 842 y 91 880) que «pisaron» otras, y esas monedas se perdieron. BIP34 (altura en la coinbase) lo hace casi imposible hoy."}]</script></figure>
+<h3>6c. El bucle de transacciones</h3>
+<figure class="cref" id="c14" data-start="2522" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 2522–2603</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L2522-L2603" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=2522" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">    std::vector&lt;int&gt; prevheights;
+    CAmount nFees = 0;
+    int nInputs = 0;
+    int64_t nSigOpsCost = 0;
+    blockundo.vtxundo.reserve(block.vtx.size() - 1);
+    for (unsigned int i = 0; i &lt; block.vtx.size(); i++)
+    {
+        if (!state.IsValid()) break;
+        const CTransaction &amp;tx = *(block.vtx[i]);
+
+        nInputs += tx.vin.size();
+
+        if (!tx.IsCoinBase())
+        {
+            CAmount txfee = 0;
+            TxValidationState tx_state;
+            if (!Consensus::CheckTxInputs(tx, tx_state, view, pindex-&gt;nHeight, txfee)) {
+                // Any transaction validation failure in ConnectBlock is a block consensus failure
+                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                              tx_state.GetRejectReason(),
+                              tx_state.GetDebugMessage() + &quot; in transaction &quot; + tx.GetHash().ToString());
+                break;
+            }
+            nFees += txfee;
+            if (!MoneyRange(nFees)) {
+                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-txns-accumulated-fee-outofrange&quot;,
+                              &quot;accumulated fee in the block out of range&quot;);
+                break;
+            }
+
+            // Check that transaction is BIP68 final
+            // BIP68 lock checks (as opposed to nLockTime checks) must
+            // be in ConnectBlock because they require the UTXO set
+            prevheights.resize(tx.vin.size());
+            for (size_t j = 0; j &lt; tx.vin.size(); j++) {
+                prevheights[j] = view.AccessCoin(tx.vin[j].prevout).nHeight;
+            }
+
+            if (!SequenceLocks(tx, nLockTimeFlags, prevheights, *pindex)) {
+                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-txns-nonfinal&quot;,
+                              &quot;contains a non-BIP68-final transaction &quot; + tx.GetHash().ToString());
+                break;
+            }
+        }
+
+        // GetTransactionSigOpCost counts 3 types of sigops:
+        // * legacy (always)
+        // * p2sh (when P2SH enabled in flags and excludes coinbase)
+        // * witness (when witness enabled in flags and excludes coinbase)
+        nSigOpsCost += GetTransactionSigOpCost(tx, view, flags);
+        if (nSigOpsCost &gt; MAX_BLOCK_SIGOPS_COST) {
+            state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-blk-sigops&quot;, &quot;too many sigops&quot;);
+            break;
+        }
+
+        if (!tx.IsCoinBase() &amp;&amp; fScriptChecks)
+        {
+            bool fCacheResults = fJustCheck; /* Don&#x27;t cache results if we&#x27;re actually connecting blocks (still consult the cache, though) */
+            bool tx_ok;
+            TxValidationState tx_state;
+            // If CheckInputScripts is called with a pointer to a checks vector, the resulting checks are appended to it. In that case
+            // they need to be added to control which runs them asynchronously. Otherwise, CheckInputScripts runs the checks before returning.
+            if (control) {
+                std::vector&lt;CScriptCheck&gt; vChecks;
+                tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache, &amp;vChecks);
+                if (tx_ok) control-&gt;Add(std::move(vChecks));
+            } else {
+                tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache);
+            }
+            if (!tx_ok) {
+                // Any transaction validation failure in ConnectBlock is a block consensus failure
+                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                              tx_state.GetRejectReason(), tx_state.GetDebugMessage());
+                break;
+            }
+        }
+
+        CTxUndo undoDummy;
+        if (i &gt; 0) {
+            blockundo.vtxundo.emplace_back();
+        }
+        UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex-&gt;nHeight);</code></pre><script type="application/json" class="cref-notes">[{"line": 2527, "html": "Se recorren las transacciones en orden. El orden importa: una transacción puede gastar una salida creada por otra anterior del mismo bloque."}, {"line": 2538, "html": "¿Existen las monedas, están maduras y cuadran las cuentas? (nivel 3). Aquí se impide el <b>doble gasto<\/b>: una moneda gastada ya no está en <code>view<\/code>."}, {"line": 2545, "html": "Se suman las comisiones…"}, {"line": 2546, "html": "…vigilando desbordamientos."}, {"line": 2560, "html": "Bloqueos relativos (BIP68): necesitan saber a qué altura se confirmó cada moneda gastada."}, {"line": 2571, "html": "Coste total de operaciones de firma del bloque ≤ 80 000."}, {"line": 2577, "html": "Verificación de scripts (firmas), salvo con assumevalid."}, {"line": 2586, "html": "Las comprobaciones se añaden a una cola (<code>CCheckQueue<\/code>) y se ejecutan en paralelo en varios hilos: es lo más costoso de todo."}, {"line": 2603, "html": "Aplica la transacción al UTXO: borra las monedas gastadas (guardándolas en los datos de deshacer) y añade las nuevas."}]</script></figure>
+<h3>6d. El final: recompensa, firmas y deshacer</h3>
+<figure class="cref" id="c15" data-start="2613" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 2613–2657</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L2613-L2657" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=2613" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">    CAmount blockReward = nFees + GetBlockSubsidy(pindex-&gt;nHeight, params.GetConsensus());
+    if (block.vtx[0]-&gt;GetValueOut() &gt; blockReward &amp;&amp; state.IsValid()) {
+        state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-cb-amount&quot;,
+                      strprintf(&quot;coinbase pays too much (actual=%d vs limit=%d)&quot;, block.vtx[0]-&gt;GetValueOut(), blockReward));
+    }
+    if (control) {
+        auto parallel_result = control-&gt;Complete();
+        if (parallel_result.has_value() &amp;&amp; state.IsValid()) {
+            state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, strprintf(&quot;block-script-verify-flag-failed (%s)&quot;, ScriptErrorString(parallel_result-&gt;first)), parallel_result-&gt;second);
+        }
+    }
+    if (!state.IsValid()) {
+        LogInfo(&quot;Block validation error: %s&quot;, state.ToString());
+        return false;
+    }
+    const auto time_4{SteadyClock::now()};
+    m_chainman.time_verify += time_4 - time_2;
+    LogDebug(BCLog::BENCH, &quot;    - Verify %u txins: %.2fms (%.3fms/txin) [%.2fs (%.2fms/blk)]\n&quot;, nInputs - 1,
+             Ticks&lt;MillisecondsDouble&gt;(time_4 - time_2),
+             nInputs &lt;= 1 ? 0 : Ticks&lt;MillisecondsDouble&gt;(time_4 - time_2) / (nInputs - 1),
+             Ticks&lt;SecondsDouble&gt;(m_chainman.time_verify),
+             Ticks&lt;MillisecondsDouble&gt;(m_chainman.time_verify) / m_chainman.num_blocks_total);
+
+    if (fJustCheck) {
+        return true;
+    }
+
+    if (!m_blockman.WriteBlockUndo(blockundo, state, *pindex)) {
+        return false;
+    }
+
+    const auto time_5{SteadyClock::now()};
+    m_chainman.time_undo += time_5 - time_4;
+    LogDebug(BCLog::BENCH, &quot;    - Write undo data: %.2fms [%.2fs (%.2fms/blk)]\n&quot;,
+             Ticks&lt;MillisecondsDouble&gt;(time_5 - time_4),
+             Ticks&lt;SecondsDouble&gt;(m_chainman.time_undo),
+             Ticks&lt;MillisecondsDouble&gt;(m_chainman.time_undo) / m_chainman.num_blocks_total);
+
+    if (!pindex-&gt;IsValid(BLOCK_VALID_SCRIPTS)) {
+        pindex-&gt;RaiseValidity(BLOCK_VALID_SCRIPTS);
+        m_blockman.m_dirty_blockindex.insert(pindex);
+    }
+
+    // add this block to the view&#x27;s block chain
+    view.SetBestBlock(pindex-&gt;GetBlockHash());</code></pre><script type="application/json" class="cref-notes">[{"line": 2614, "html": "La coinbase no puede pagar más que subsidio + comisiones."}, {"line": 2619, "html": "Espera a que terminen todos los hilos de verificación de firmas. Si alguna falló, el bloque es inválido."}, {"line": 2636, "html": "Modo «sólo comprobar» (para plantillas de minería): aquí termina."}, {"line": 2640, "html": "Escribe los datos de deshacer en <code>rev?????.dat<\/code>: las monedas que gastó este bloque, para poder revertirlo en una reorganización."}, {"line": 2652, "html": "El bloque alcanza el máximo nivel de validez."}, {"line": 2657, "html": "El UTXO ahora corresponde a este bloque."}]</script></figure>
+
+<h2>7. Deshacer un bloque</h2>
+<figure class="cref" id="c16" data-start="2183" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 2183–2252</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L2183-L2252" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=2183" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">DisconnectResult Chainstate::DisconnectBlock(const CBlock&amp; block, const CBlockIndex* pindex, CCoinsViewCache&amp; view)
+{
+    AssertLockHeld(::cs_main);
+    bool fClean = true;
+
+    CBlockUndo blockUndo;
+    if (!m_blockman.ReadBlockUndo(blockUndo, *pindex)) {
+        LogError(&quot;DisconnectBlock(): failure reading undo data\n&quot;);
+        return DISCONNECT_FAILED;
+    }
+
+    if (blockUndo.vtxundo.size() + 1 != block.vtx.size()) {
+        LogError(&quot;DisconnectBlock(): block and undo data inconsistent\n&quot;);
+        return DISCONNECT_FAILED;
+    }
+
+    // Ignore blocks that contain transactions which are &#x27;overwritten&#x27; by later transactions,
+    // unless those are already completely spent.
+    // See https://github.com/bitcoin/bitcoin/issues/22596 for additional information.
+    // Note: the blocks specified here are different than the ones used in ConnectBlock because DisconnectBlock
+    // unwinds the blocks in reverse. As a result, the inconsistency is not discovered until the earlier
+    // blocks with the duplicate coinbase transactions are disconnected.
+    bool fEnforceBIP30 = !((pindex-&gt;nHeight==91722 &amp;&amp; pindex-&gt;GetBlockHash() == uint256{&quot;00000000000271a2dc26e7667f8419f2e15416dc6955e5a6c6cdf3f2574dd08e&quot;}) ||
+                           (pindex-&gt;nHeight==91812 &amp;&amp; pindex-&gt;GetBlockHash() == uint256{&quot;00000000000af0aed4792b1acee3d966af36cf5def14935db8de83d6f9306f2f&quot;}));
+
+    // undo transactions in reverse order
+    for (int i = block.vtx.size() - 1; i &gt;= 0; i--) {
+        const CTransaction &amp;tx = *(block.vtx[i]);
+        Txid hash = tx.GetHash();
+        bool is_coinbase = tx.IsCoinBase();
+        bool is_bip30_exception = (is_coinbase &amp;&amp; !fEnforceBIP30);
+
+        // Check that all outputs are available and match the outputs in the block itself
+        // exactly.
+        for (size_t o = 0; o &lt; tx.vout.size(); o++) {
+            if (!tx.vout[o].scriptPubKey.IsUnspendable()) {
+                COutPoint out(hash, o);
+                Coin coin;
+                bool is_spent = view.SpendCoin(out, &amp;coin);
+                if (!is_spent || tx.vout[o] != coin.out || pindex-&gt;nHeight != coin.nHeight || is_coinbase != coin.fCoinBase) {
+                    if (!is_bip30_exception) {
+                        fClean = false; // transaction output mismatch
+                    }
+                }
+            }
+        }
+
+        // restore inputs
+        if (i &gt; 0) { // not coinbases
+            CTxUndo &amp;txundo = blockUndo.vtxundo[i-1];
+            if (txundo.vprevout.size() != tx.vin.size()) {
+                LogError(&quot;DisconnectBlock(): transaction and undo data inconsistent\n&quot;);
+                return DISCONNECT_FAILED;
+            }
+            for (unsigned int j = tx.vin.size(); j &gt; 0;) {
+                --j;
+                const COutPoint&amp; out = tx.vin[j].prevout;
+                int res = ApplyTxInUndo(std::move(txundo.vprevout[j]), view, out);
+                if (res == DISCONNECT_FAILED) return DISCONNECT_FAILED;
+                fClean = fClean &amp;&amp; res != DISCONNECT_UNCLEAN;
+            }
+            // At this point, all of txundo.vprevout should have been moved out.
+        }
+    }
+
+    // move best block pointer to prevout block
+    view.SetBestBlock(pindex-&gt;pprev-&gt;GetBlockHash());
+
+    return fClean ? DISCONNECT_OK : DISCONNECT_UNCLEAN;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 2189, "html": "Lee los datos de deshacer del bloque."}, {"line": 2205, "html": "Las dos excepciones históricas de BIP30 (las coinbases duplicadas de 2010)."}, {"line": 2209, "html": "Se deshacen las transacciones en orden <b>inverso<\/b>."}, {"line": 2221, "html": "Se borran las salidas que creó el bloque, comprobando que coinciden exactamente."}, {"line": 2240, "html": "Se restauran las monedas que había gastado."}, {"line": 2249, "html": "El UTXO vuelve a corresponder al bloque anterior."}]</script></figure>
+
+<h2>Todas las reglas de rechazo</h2>
+<p>Esta tabla se genera buscando cada <code>state.Invalid(…)</code> en los archivos de consenso. Es un buen índice para auditar: cada fila es una regla.</p>
+<div class="table-wrap tall"><div class="table-wrap"><table class="data"><thead><tr><th>Motivo de rechazo</th><th>Tipo</th><th>Dónde está la regla</th></tr></thead><tbody>
+<tr><td><code>bad-txns-vin-empty</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_check.cpp&amp;l=15">src/consensus/tx_check.cpp:15</a></td></tr>
+<tr><td><code>bad-txns-vout-empty</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_check.cpp&amp;l=17">src/consensus/tx_check.cpp:17</a></td></tr>
+<tr><td><code>bad-txns-oversize</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_check.cpp&amp;l=20">src/consensus/tx_check.cpp:20</a></td></tr>
+<tr><td><code>bad-txns-vout-negative</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_check.cpp&amp;l=28">src/consensus/tx_check.cpp:28</a></td></tr>
+<tr><td><code>bad-txns-vout-toolarge</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_check.cpp&amp;l=30">src/consensus/tx_check.cpp:30</a></td></tr>
+<tr><td><code>bad-txns-txouttotal-toolarge</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_check.cpp&amp;l=33">src/consensus/tx_check.cpp:33</a></td></tr>
+<tr><td><code>bad-txns-inputs-duplicate</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_check.cpp&amp;l=44">src/consensus/tx_check.cpp:44</a></td></tr>
+<tr><td><code>bad-cb-length</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_check.cpp&amp;l=50">src/consensus/tx_check.cpp:50</a></td></tr>
+<tr><td><code>bad-txns-prevout-null</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_check.cpp&amp;l=56">src/consensus/tx_check.cpp:56</a></td></tr>
+<tr><td><code>bad-txns-inputs-missingorspent</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_verify.cpp&amp;l=168">src/consensus/tx_verify.cpp:168</a></td></tr>
+<tr><td><code>bad-txns-premature-spend-of-coinbase</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_verify.cpp&amp;l=180">src/consensus/tx_verify.cpp:180</a></td></tr>
+<tr><td><code>bad-txns-inputvalues-outofrange</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_verify.cpp&amp;l=187">src/consensus/tx_verify.cpp:187</a></td></tr>
+<tr><td><code>bad-txns-in-belowout</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_verify.cpp&amp;l=197">src/consensus/tx_verify.cpp:197</a></td></tr>
+<tr><td><code>bad-txns-fee-outofrange</code></td><td>TX</td><td><a href="explorador.html#f=src/consensus/tx_verify.cpp&amp;l=209">src/consensus/tx_verify.cpp:209</a></td></tr>
+<tr><td><code>non-final</code></td><td>TX</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=827">src/validation.cpp:827</a></td></tr>
+<tr><td><code>txn-already-in-mempool</code></td><td>TX</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=832">src/validation.cpp:832</a></td></tr>
+<tr><td><code>txn-same-nonwitness-data-in-mempool</code></td><td>TX</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=836">src/validation.cpp:836</a></td></tr>
+<tr><td><code>txn-already-known</code></td><td>TX</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=869">src/validation.cpp:869</a></td></tr>
+<tr><td><code>bad-txns-inputs-missingorspent</code></td><td>TX</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=873">src/validation.cpp:873</a></td></tr>
+<tr><td><code>bad-txns-nonstandard-inputs</code></td><td>TX</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=904">src/validation.cpp:904</a></td></tr>
+<tr><td><code>bad-witness-nonstandard</code></td><td>TX</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=909">src/validation.cpp:909</a></td></tr>
+<tr><td><code>bad-txns-too-many-sigops</code></td><td>TX</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=946">src/validation.cpp:946</a></td></tr>
+<tr><td><code>bad-txns-spends-conflicting-tx</code></td><td>TX</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=1363">src/validation.cpp:1363</a></td></tr>
+<tr><td><code>bad-txns-accumulated-fee-outofrange</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=2547">src/validation.cpp:2547</a></td></tr>
+<tr><td><code>bad-txns-nonfinal</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=2561">src/validation.cpp:2561</a></td></tr>
+<tr><td><code>bad-blk-sigops</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=2573">src/validation.cpp:2573</a></td></tr>
+<tr><td><code>bad-cb-amount</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=2615">src/validation.cpp:2615</a></td></tr>
+<tr><td><code>high-hash</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=3880">src/validation.cpp:3880</a></td></tr>
+<tr><td><code>bad-txnmrklroot</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=3894">src/validation.cpp:3894</a></td></tr>
+<tr><td><code>bad-txns-duplicate</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=3904">src/validation.cpp:3904</a></td></tr>
+<tr><td><code>bad-witness-nonce-size</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=3931">src/validation.cpp:3931</a></td></tr>
+<tr><td><code>bad-witness-merkle-match</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=3944">src/validation.cpp:3944</a></td></tr>
+<tr><td><code>unexpected-witness</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=3958">src/validation.cpp:3958</a></td></tr>
+<tr><td><code>bad-signet-blksig</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=3980">src/validation.cpp:3980</a></td></tr>
+<tr><td><code>bad-blk-length</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=3996">src/validation.cpp:3996</a></td></tr>
+<tr><td><code>bad-cb-missing</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=4000">src/validation.cpp:4000</a></td></tr>
+<tr><td><code>bad-cb-multiple</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=4003">src/validation.cpp:4003</a></td></tr>
+<tr><td><code>bad-diffbits</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=4137">src/validation.cpp:4137</a></td></tr>
+<tr><td><code>time-too-old</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=4141">src/validation.cpp:4141</a></td></tr>
+<tr><td><code>time-timewarp-attack</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=4150">src/validation.cpp:4150</a></td></tr>
+<tr><td><code>time-too-new</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=4157">src/validation.cpp:4157</a></td></tr>
+<tr><td><code>bad-version(0x%08x)</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=4164">src/validation.cpp:4164</a></td></tr>
+<tr><td><code>bad-cb-height</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=4205">src/validation.cpp:4205</a></td></tr>
+<tr><td><code>bad-blk-weight</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=4228">src/validation.cpp:4228</a></td></tr>
+<tr><td><code>bad-prevblk</code></td><td>BLOQUE</td><td><a href="explorador.html#f=src/validation.cpp&amp;l=4270">src/validation.cpp:4270</a></td></tr>
+</tbody></table></div>
+<p class="muted small">Tabla generada automáticamente: 45 cadenas encontradas buscando <code>state.Invalid(…)</code> en src/consensus/tx_check.cpp, src/consensus/tx_verify.cpp, src/validation.cpp, src/pow.cpp.</p></div>
+
+<div class="quiz" data-title="Test del nivel 6"><script type="application/json">[
+{"q":"¿Qué cadena sigue un nodo?","o":["La más larga","La válida con más trabajo acumulado","La que diga la mayoría de pares","La primera que recibió"],"a":1,"why":"FindMostWorkChain ordena candidatos por nChainWork."},
+{"q":"¿Por qué un fallo en CheckBlock no marca el bloque como inválido para siempre?","o":["Por pereza","Porque podría ser una versión manipulada (maleable) de un bloque válido con el mismo hash","Porque CheckBlock nunca falla","Porque lo hace otra función"],"a":1,"why":"Comentario en ProcessNewBlock, relacionado con CVE-2012-2459."},
+{"q":"Con assumevalid activo, ¿qué se deja de comprobar en bloques antiguos?","o":["Todo","Sólo los scripts/firmas; montos, doble gasto y Merkle se siguen comprobando","La prueba de trabajo","Las comisiones"],"a":1,"why":"Sólo se salta la verificación de scripts, y con condiciones."},
+{"q":"¿Dónde se impide el doble gasto entre transacciones de distintos bloques?","o":["En la cartera","En CheckTxInputs dentro de ConnectBlock: la moneda gastada ya no está en el UTXO","En la red","En el minero"],"a":1,"why":"HaveInputs falla si la moneda no está en la vista."},
+{"q":"¿Para qué sirven los archivos rev*.dat?","o":["Para las revisiones del código","Para deshacer bloques en una reorganización","Para la cartera","Para logs"],"a":1,"why":"WriteBlockUndo/ReadBlockUndo."},
+{"q":"¿Qué exige BIP34?","o":["Firmas DER","Que la coinbase empiece con la altura del bloque","Bloques de 1 MB","SegWit"],"a":1,"why":"ContextualCheckBlock: bad-cb-height."}
+]</script></div>
+
+    <nav class="prevnext"><a class="prev" href="nivel-5.html"><span>← Anterior</span>Nivel 5 · Bloques, árbol de Merkle y prueba de trabajo</a><a class="next" href="nivel-7.html"><span>Siguiente →</span>Nivel 7 · Estado: el conjunto UTXO, la base de datos y el disco</a></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+<script type="module" src="assets/diagrams.js"></script>
+</body>
+</html>

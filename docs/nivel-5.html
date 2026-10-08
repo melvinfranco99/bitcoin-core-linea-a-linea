@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nivel 5 · Bloques, árbol de Merkle y prueba de trabajo · Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="nivel-5">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html">3 · Transacciones</a></li>
+<li><a href="nivel-4.html">4 · Script</a></li>
+<li><a href="nivel-5.html" class="active">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html">8 · Red P2P</a></li>
+<li><a href="nivel-9.html">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <div class="kicker">Nivel 5 · La cadena</div>
+<h1>Bloques, árbol de Merkle y prueba de trabajo</h1>
+<p class="lead">Un bloque es un paquete de transacciones con una cabecera de 80 bytes que lo encadena al anterior. Para que sea válido, alguien tiene que haber gastado electricidad real buscando un número (el <i>nonce</i>) que haga que su hash sea menor que un objetivo. Aquí verás todo eso en el código, reconstruirás el bloque génesis y minarás tu propio bloque.</p>
+
+<h2>Anatomía de un bloque</h2>
+<pre class="mermaid">
+flowchart LR
+  subgraph B1["Bloque N-1"]
+    H1["Cabecera 80 B"]
+  end
+  subgraph B2["Bloque N"]
+    H2["versión · hashPrevBlock · hashMerkleRoot<br/>nTime · nBits · nNonce"] --> T2["Transacciones<br/>[coinbase, tx1, tx2, …]"]
+  end
+  subgraph B3["Bloque N+1"]
+    H3["Cabecera 80 B"]
+  end
+  H1 -- "SHA256d(cabecera)" --> H2
+  H2 -- "SHA256d(cabecera)" --> H3
+</pre>
+<p>Cada cabecera contiene el hash de la anterior. Cambiar una transacción antigua cambiaría la raíz de Merkle de su bloque, por tanto su hash, por tanto la cabecera siguiente… y habría que rehacer la prueba de trabajo de <b>todos</b> los bloques posteriores.</p>
+<figure class="cref" id="c1" data-start="26" data-file="src/primitives/block.h"><figcaption><span class="cref-file">src/primitives/block.h</span><span class="cref-lines">líneas 26–73</span><span class="cref-title">la cabecera</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/primitives/block.h#L26-L73" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/primitives/block.h&amp;l=26" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">class CBlockHeader
+{
+public:
+    // header
+    int32_t nVersion;
+    uint256 hashPrevBlock;
+    uint256 hashMerkleRoot;
+    uint32_t nTime;
+    uint32_t nBits;
+    uint32_t nNonce;
+
+    CBlockHeader()
+    {
+        SetNull();
+    }
+
+    SERIALIZE_METHODS(CBlockHeader, obj) { READWRITE(obj.nVersion, obj.hashPrevBlock, obj.hashMerkleRoot, obj.nTime, obj.nBits, obj.nNonce); }
+
+    void SetNull()
+    {
+        nVersion = 0;
+        hashPrevBlock.SetNull();
+        hashMerkleRoot.SetNull();
+        nTime = 0;
+        nBits = 0;
+        nNonce = 0;
+    }
+
+    bool IsNull() const
+    {
+        return (nBits == 0);
+    }
+
+    uint256 GetHash() const;
+
+    NodeSeconds Time() const
+    {
+        return NodeSeconds{std::chrono::seconds{nTime}};
+    }
+
+    int64_t GetBlockTime() const
+    {
+        return (int64_t)nTime;
+    }
+};
+
+
+class CBlock : public CBlockHeader</code></pre><script type="application/json" class="cref-notes">[{"line": 30, "html": "Versión. Hoy sus bits se usan para que los mineros señalen soft forks (nivel 10)."}, {"line": 31, "html": "El hash del bloque anterior: el «eslabón» de la cadena."}, {"line": 32, "html": "Un único hash que resume todas las transacciones del bloque (ver más abajo)."}, {"line": 33, "html": "Marca de tiempo (segundos desde 1970). Tiene reglas: mayor que la mediana de los 11 anteriores y no más de 2 horas en el futuro."}, {"line": 34, "html": "El objetivo de dificultad en formato compacto."}, {"line": 35, "html": "El número que los mineros van cambiando para buscar un hash válido."}, {"line": 56, "html": "Una cabecera «nula» se reconoce por nBits = 0."}]</script></figure>
+<figure class="cref" id="c2" data-start="15" data-file="src/primitives/block.cpp"><figcaption><span class="cref-file">src/primitives/block.cpp</span><span class="cref-lines">líneas 15–18</span><span class="cref-title">el hash del bloque</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/primitives/block.cpp#L15-L18" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/primitives/block.cpp&amp;l=15" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">uint256 CBlockHeader::GetHash() const
+{
+    return (HashWriter{} &lt;&lt; *this).GetHash();
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 17, "html": "Serializa los 80 bytes de la cabecera y calcula su doble SHA-256. Fíjate: ¡las transacciones no se hashean aquí! Sólo la raíz de Merkle que las resume."}]</script></figure>
+
+<h2>El árbol de Merkle</h2>
+<p>Para resumir miles de transacciones en 32 bytes se hashean por parejas, luego las parejas de parejas… hasta llegar a uno solo, la raíz. Ventaja: puedes demostrar que una transacción está en un bloque enseñando sólo unos pocos hashes (el «camino»), no el bloque entero.</p>
+<figure class="cref" id="c3" data-start="9" data-file="src/consensus/merkle.cpp"><figcaption><span class="cref-file">src/consensus/merkle.cpp</span><span class="cref-lines">líneas 9–63</span><span class="cref-title">ComputeMerkleRoot y su advertencia</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/consensus/merkle.cpp#L9-L63" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/consensus/merkle.cpp&amp;l=9" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">/*     WARNING! If you&#x27;re reading this because you&#x27;re learning about crypto
+       and/or designing a new system that will use merkle trees, keep in mind
+       that the following merkle tree algorithm has a serious flaw related to
+       duplicate txids, resulting in a vulnerability (CVE-2012-2459).
+
+       The reason is that if the number of hashes in the list at a given level
+       is odd, the last one is duplicated before computing the next level (which
+       is unusual in Merkle trees). This results in certain sequences of
+       transactions leading to the same merkle root. For example, these two
+       trees:
+
+                    A               A
+                  /  \            /   \
+                B     C         B       C
+               / \    |        / \     / \
+              D   E   F       D   E   F   F
+             / \ / \ / \     / \ / \ / \ / \
+             1 2 3 4 5 6     1 2 3 4 5 6 5 6
+
+       for transaction lists [1,2,3,4,5,6] and [1,2,3,4,5,6,5,6] (where 5 and
+       6 are repeated) result in the same root hash A (because the hash of both
+       of (F) and (F,F) is C).
+
+       The vulnerability results from being able to send a block with such a
+       transaction list, with the same merkle root, and the same block hash as
+       the original without duplication, resulting in failed validation. If the
+       receiving node proceeds to mark that block as permanently invalid
+       however, it will fail to accept further unmodified (and thus potentially
+       valid) versions of the same block. We defend against this by detecting
+       the case where we would hash two identical hashes at the end of the list
+       together, and treating that identically to the block having an invalid
+       merkle root. Assuming no double-SHA256 collisions, this will detect all
+       known ways of changing the transactions without affecting the merkle
+       root.
+*/
+
+
+uint256 ComputeMerkleRoot(std::vector&lt;uint256&gt; hashes, bool* mutated) {
+    bool mutation = false;
+    while (hashes.size() &gt; 1) {
+        if (mutated) {
+            for (size_t pos = 0; pos + 1 &lt; hashes.size(); pos += 2) {
+                if (hashes[pos] == hashes[pos + 1]) mutation = true;
+            }
+        }
+        if (hashes.size() &amp; 1) {
+            hashes.push_back(hashes.back());
+        }
+        SHA256D64(hashes[0].begin(), hashes[0].begin(), hashes.size() / 2);
+        hashes.resize(hashes.size() / 2);
+    }
+    if (mutated) *mutated = mutation;
+    if (hashes.size() == 0) return uint256();
+    return hashes[0];
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 9, "html": "Los propios desarrolladores avisan: este árbol tiene un defecto de diseño de 2009 (CVE-2012-2459). No se puede cambiar sin un hard fork, así que se defiende."}, {"line": 28, "html": "Al duplicar el último elemento cuando el nivel es impar, dos listas distintas de transacciones dan la misma raíz."}, {"line": 37, "html": "La defensa: detectar dos hashes idénticos que se van a combinar y tratarlo como un bloque «mutado» (que no es lo mismo que inválido: el bloque bueno con ese hash sigue pudiendo llegar)."}, {"line": 48, "html": "Mientras quede más de un hash, sube un nivel."}, {"line": 51, "html": "Detección de la mutación."}, {"line": 55, "html": "Si hay un número impar, duplica el último."}, {"line": 57, "html": "Hashea todas las parejas de 64 bytes de una vez (con aceleración por hardware si la hay), escribiendo el resultado en la mitad inicial del mismo vector."}, {"line": 58, "html": "El nivel siguiente tiene la mitad de elementos."}]</script></figure>
+<div class="game" data-game="merkle"></div>
+
+<h2>Prueba de trabajo</h2>
+<div class="analogy">Imagina una lotería en la que, para ganar, tienes que tirar 64 dados de 16 caras y que salgan al menos 19 ceros seguidos al principio. No hay trucos: sólo puedes tirar muchas veces. Quien enseña una tirada ganadora demuestra que, en promedio, tiró muchísimas veces. Y comprobarlo cuesta una sola mirada.</div>
+<p>El hash de la cabecera, interpretado como número de 256 bits, debe ser <b>menor o igual que el objetivo</b> (target). Cuanto menor el objetivo, más difícil.</p>
+<figure class="cref" id="c4" data-start="146" data-file="src/pow.cpp"><figcaption><span class="cref-file">src/pow.cpp</span><span class="cref-lines">líneas 146–170</span><span class="cref-title">comprobar la prueba de trabajo</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/pow.cpp#L146-L170" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/pow.cpp&amp;l=146" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">std::optional&lt;arith_uint256&gt; DeriveTarget(unsigned int nBits, const uint256 pow_limit)
+{
+    bool fNegative;
+    bool fOverflow;
+    arith_uint256 bnTarget;
+
+    bnTarget.SetCompact(nBits, &amp;fNegative, &amp;fOverflow);
+
+    // Check range
+    if (fNegative || bnTarget == 0 || fOverflow || bnTarget &gt; UintToArith256(pow_limit))
+        return {};
+
+    return bnTarget;
+}
+
+bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params&amp; params)
+{
+    auto bnTarget{DeriveTarget(nBits, params.powLimit)};
+    if (!bnTarget) return false;
+
+    // Check proof of work matches claimed amount
+    if (UintToArith256(hash) &gt; bnTarget)
+        return false;
+
+    return true;</code></pre><script type="application/json" class="cref-notes">[{"line": 152, "html": "Convierte los 4 bytes de nBits en el objetivo de 256 bits."}, {"line": 155, "html": "Rechaza objetivos absurdos: negativos, cero, desbordados o más fáciles que el mínimo permitido (<code>powLimit<\/code>)."}, {"line": 167, "html": "LA regla: si el hash es mayor que el objetivo, no hay prueba de trabajo. Es una comparación de números; toda la seguridad de la minería se resume en esta línea."}]</script></figure>
+
+<h3>El formato compacto nBits</h3>
+<p>Un objetivo de 256 bits se guarda en 32 bits como en notación científica: 1 byte de «exponente» (cuántos bytes mide) y 3 de «mantisa». Por ejemplo <code>0x1d00ffff</code> = <code>0x00ffff</code> × 256<sup>(0x1d − 3)</sup> = <code>00000000ffff0000…</code>.</p>
+<figure class="cref" id="c5" data-start="175" data-file="src/arith_uint256.cpp"><figcaption><span class="cref-file">src/arith_uint256.cpp</span><span class="cref-lines">líneas 175–193</span><span class="cref-title">de nBits a objetivo</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/arith_uint256.cpp#L175-L193" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/arith_uint256.cpp&amp;l=175" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">arith_uint256&amp; arith_uint256::SetCompact(uint32_t nCompact, bool* pfNegative, bool* pfOverflow)
+{
+    int nSize = nCompact &gt;&gt; 24;
+    uint32_t nWord = nCompact &amp; 0x007fffff;
+    if (nSize &lt;= 3) {
+        nWord &gt;&gt;= 8 * (3 - nSize);
+        *this = nWord;
+    } else {
+        *this = nWord;
+        *this &lt;&lt;= 8 * (nSize - 3);
+    }
+    if (pfNegative)
+        *pfNegative = nWord != 0 &amp;&amp; (nCompact &amp; 0x00800000) != 0;
+    if (pfOverflow)
+        *pfOverflow = nWord != 0 &amp;&amp; ((nSize &gt; 34) ||
+                                     (nWord &gt; 0xff &amp;&amp; nSize &gt; 33) ||
+                                     (nWord &gt; 0xffff &amp;&amp; nSize &gt; 32));
+    return *this;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 177, "html": "El byte alto es el tamaño en bytes."}, {"line": 178, "html": "Los 23 bits bajos son la mantisa (el bit 0x00800000 sería el signo, heredado de OpenSSL)."}, {"line": 184, "html": "Desplaza la mantisa a su posición."}, {"line": 187, "html": "Marca si tiene signo negativo (inválido)."}, {"line": 189, "html": "Marca si no cabe en 256 bits (inválido)."}]</script></figure>
+
+<h3>Ajuste de dificultad cada 2016 bloques</h3>
+<p>El objetivo es un bloque cada 10 minutos. Cada 2016 bloques (≈ 2 semanas) se mira cuánto se tardó de verdad y se corrige la dificultad proporcionalmente.</p>
+<figure class="cref" id="c6" data-start="14" data-file="src/pow.cpp"><figcaption><span class="cref-file">src/pow.cpp</span><span class="cref-lines">líneas 14–48</span><span class="cref-title">¿toca ajustar?</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/pow.cpp#L14-L48" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/pow.cpp&amp;l=14" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params&amp; params)
+{
+    assert(pindexLast != nullptr);
+    unsigned int nProofOfWorkLimit = UintToArith256(params.powLimit).GetCompact();
+
+    // Only change once per difficulty adjustment interval
+    if ((pindexLast-&gt;nHeight+1) % params.DifficultyAdjustmentInterval() != 0)
+    {
+        if (params.fPowAllowMinDifficultyBlocks)
+        {
+            // Special difficulty rule for testnet:
+            // If the new block&#x27;s timestamp is more than 2* 10 minutes
+            // then it MUST be a min-difficulty block.
+            if (pblock-&gt;GetBlockTime() &gt; pindexLast-&gt;GetBlockTime() + params.nPowTargetSpacing*2)
+                return nProofOfWorkLimit;
+            else
+            {
+                // Return the last non-special-min-difficulty-rules-block
+                const CBlockIndex* pindex = pindexLast;
+                while (pindex-&gt;pprev &amp;&amp; pindex-&gt;nHeight % params.DifficultyAdjustmentInterval() != 0 &amp;&amp; pindex-&gt;nBits == nProofOfWorkLimit)
+                    pindex = pindex-&gt;pprev;
+                return pindex-&gt;nBits;
+            }
+        }
+        return pindexLast-&gt;nBits;
+    }
+
+    // Go back by what we want to be 14 days worth of blocks
+    int nHeightFirst = pindexLast-&gt;nHeight - (params.DifficultyAdjustmentInterval()-1);
+    assert(nHeightFirst &gt;= 0);
+    const CBlockIndex* pindexFirst = pindexLast-&gt;GetAncestor(nHeightFirst);
+    assert(pindexFirst);
+
+    return CalculateNextWorkRequired(pindexLast, pindexFirst-&gt;GetBlockTime(), params);
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 20, "html": "Si el nuevo bloque no empieza un período de 2016 (= 2 semanas / 10 min), la dificultad no cambia…"}, {"line": 22, "html": "…salvo en testnet, donde hay una regla especial de dificultad mínima (en mainnet esta rama nunca se ejecuta)."}, {"line": 38, "html": "Se mantiene el nBits del bloque anterior."}, {"line": 42, "html": "Busca el primer bloque del período que acaba."}, {"line": 47, "html": "Y calcula la nueva dificultad con el tiempo transcurrido."}]</script></figure>
+<figure class="cref" id="c7" data-start="50" data-file="src/pow.cpp"><figcaption><span class="cref-file">src/pow.cpp</span><span class="cref-lines">líneas 50–85</span><span class="cref-title">el cálculo</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/pow.cpp#L50-L85" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/pow.cpp&amp;l=50" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params&amp; params)
+{
+    if (params.fPowNoRetargeting)
+        return pindexLast-&gt;nBits;
+
+    // Limit adjustment step
+    int64_t nActualTimespan = pindexLast-&gt;GetBlockTime() - nFirstBlockTime;
+    if (nActualTimespan &lt; params.nPowTargetTimespan/4)
+        nActualTimespan = params.nPowTargetTimespan/4;
+    if (nActualTimespan &gt; params.nPowTargetTimespan*4)
+        nActualTimespan = params.nPowTargetTimespan*4;
+
+    // Retarget
+    const arith_uint256 bnPowLimit = UintToArith256(params.powLimit);
+    arith_uint256 bnNew;
+
+    // Special difficulty rule for Testnet4
+    if (params.enforce_BIP94) {
+        // Here we use the first block of the difficulty period. This way
+        // the real difficulty is always preserved in the first block as
+        // it is not allowed to use the min-difficulty exception.
+        int nHeightFirst = pindexLast-&gt;nHeight - (params.DifficultyAdjustmentInterval()-1);
+        const CBlockIndex* pindexFirst = pindexLast-&gt;GetAncestor(nHeightFirst);
+        bnNew.SetCompact(pindexFirst-&gt;nBits);
+    } else {
+        bnNew.SetCompact(pindexLast-&gt;nBits);
+    }
+
+    bnNew *= nActualTimespan;
+    bnNew /= params.nPowTargetTimespan;
+
+    if (bnNew &gt; bnPowLimit)
+        bnNew = bnPowLimit;
+
+    return bnNew.GetCompact();
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 56, "html": "Tiempo real del período. (Detalle histórico: mide entre el primer y el último bloque, 2015 intervalos y no 2016: el famoso error «off-by-one» de Satoshi, inofensivo en la práctica.)"}, {"line": 57, "html": "Límite: la dificultad no puede subir más de ×4 en un ajuste…"}, {"line": 59, "html": "…ni bajar más de ÷4."}, {"line": 67, "html": "Regla sólo de testnet4 (BIP94) contra el ataque «timewarp»."}, {"line": 78, "html": "Nuevo objetivo = objetivo anterior × tiempo real / tiempo deseado. Si se tardó la mitad, el objetivo se reduce a la mitad (el doble de difícil)."}, {"line": 81, "html": "Nunca más fácil que powLimit."}, {"line": 84, "html": "De vuelta a formato compacto."}]</script></figure>
+<div class="game" data-game="difficulty"></div>
+<div class="game" data-game="miner"></div>
+
+<h2>La recompensa y los 21 millones</h2>
+<p>La primera transacción de cada bloque (coinbase) crea monedas nuevas. ¿Cuántas? Lo dice esta función de 10 líneas. <b>Aquí, y no en ningún otro sitio, está la política monetaria de Bitcoin.</b></p>
+<figure class="cref" id="c8" data-start="1843" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 1843–1854</span><span class="cref-title">la emisión monetaria</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L1843-L1854" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=1843" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">CAmount GetBlockSubsidy(int nHeight, const Consensus::Params&amp; consensusParams)
+{
+    int halvings = nHeight / consensusParams.nSubsidyHalvingInterval;
+    // Force block reward to zero when right shift is undefined.
+    if (halvings &gt;= 64)
+        return 0;
+
+    CAmount nSubsidy = 50 * COIN;
+    // Subsidy is cut in half every 210,000 blocks which will occur approximately every 4 years.
+    nSubsidy &gt;&gt;= halvings;
+    return nSubsidy;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 1845, "html": "¿Cuántos halvings han pasado? nSubsidyHalvingInterval = 210 000 bloques (≈ 4 años)."}, {"line": 1847, "html": "Protección técnica: desplazar un número de 64 bits 64 posiciones o más es «comportamiento indefinido» en C++. Este arreglo (BIP42, 2014) evitó que dentro de ~250 años la recompensa volviera a ser 50 BTC."}, {"line": 1850, "html": "Se empieza en 50 BTC…"}, {"line": 1852, "html": "…y se divide por 2 una vez por halving (desplazar bits a la derecha = dividir por 2 redondeando hacia abajo)."}]</script></figure>
+<p>Y en <code>ConnectBlock</code> se comprueba que el minero no se paga de más:</p>
+<figure class="cref" id="c9" data-start="2613" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 2613–2616</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L2613-L2616" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=2613" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">    CAmount blockReward = nFees + GetBlockSubsidy(pindex-&gt;nHeight, params.GetConsensus());
+    if (block.vtx[0]-&gt;GetValueOut() &gt; blockReward &amp;&amp; state.IsValid()) {
+        state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, &quot;bad-cb-amount&quot;,
+                      strprintf(&quot;coinbase pays too much (actual=%d vs limit=%d)&quot;, block.vtx[0]-&gt;GetValueOut(), blockReward));</code></pre><script type="application/json" class="cref-notes">[{"line": 2613, "html": "Lo máximo que puede cobrar el minero: subsidio + suma de comisiones de las transacciones del bloque."}, {"line": 2614, "html": "Si la coinbase paga más, el bloque es inválido. Puede pagar menos (y esas monedas se pierden para siempre: ha pasado)."}]</script></figure>
+<div class="game" data-game="supply"></div>
+
+<h2>El bloque génesis</h2>
+<p>El primer bloque no tiene anterior: está escrito directamente en el código. Y el código <b>se comprueba a sí mismo</b> con <code>assert</code>: si alguien cambiara un byte, el programa se negaría a arrancar.</p>
+<figure class="cref" id="c10" data-start="36" data-file="src/kernel/chainparams.cpp"><figcaption><span class="cref-file">src/kernel/chainparams.cpp</span><span class="cref-lines">líneas 36–55</span><span class="cref-title">cómo se fabrica el génesis</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/kernel/chainparams.cpp#L36-L55" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/kernel/chainparams.cpp&amp;l=36" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static CBlock CreateGenesisBlock(const char* pszTimestamp, const CScript&amp; genesisOutputScript, uint32_t nTime, uint32_t nNonce, uint32_t nBits, int32_t nVersion, const CAmount&amp; genesisReward)
+{
+    CMutableTransaction txNew;
+    txNew.version = 1;
+    txNew.vin.resize(1);
+    txNew.vout.resize(1);
+    txNew.vin[0].scriptSig = CScript() &lt;&lt; 486604799 &lt;&lt; CScriptNum(4) &lt;&lt; std::vector&lt;unsigned char&gt;((const unsigned char*)pszTimestamp, (const unsigned char*)pszTimestamp + strlen(pszTimestamp));
+    txNew.vout[0].nValue = genesisReward;
+    txNew.vout[0].scriptPubKey = genesisOutputScript;
+
+    CBlock genesis;
+    genesis.nTime    = nTime;
+    genesis.nBits    = nBits;
+    genesis.nNonce   = nNonce;
+    genesis.nVersion = nVersion;
+    genesis.vtx.push_back(MakeTransactionRef(std::move(txNew)));
+    genesis.hashPrevBlock.SetNull();
+    genesis.hashMerkleRoot = BlockMerkleRoot(genesis);
+    return genesis;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 39, "html": "Una transacción versión 1…"}, {"line": 42, "html": "…cuyo scriptSig contiene 486604799 (= 0x1d00ffff, los nBits), el número 4 y el titular de The Times del 3 de enero de 2009: prueba de que el bloque no se creó antes de esa fecha."}, {"line": 43, "html": "50 BTC…"}, {"line": 44, "html": "…a una clave pública (estilo P2PK). Estas monedas nunca se pueden gastar: el génesis no se añadió a la base de datos de monedas."}, {"line": 52, "html": "Sin bloque anterior."}, {"line": 53, "html": "Raíz de Merkle de una sola transacción = su propio txid."}]</script></figure>
+<figure class="cref" id="c11" data-start="134" data-file="src/kernel/chainparams.cpp"><figcaption><span class="cref-file">src/kernel/chainparams.cpp</span><span class="cref-lines">líneas 134–137</span><span class="cref-title">las comprobaciones</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/kernel/chainparams.cpp#L134-L137" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/kernel/chainparams.cpp&amp;l=134" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">        genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff, 1, 50 * COIN);
+        consensus.hashGenesisBlock = genesis.GetHash();
+        assert(consensus.hashGenesisBlock == uint256{&quot;000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f&quot;});
+        assert(genesis.hashMerkleRoot == uint256{&quot;4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b&quot;});</code></pre><script type="application/json" class="cref-notes">[{"line": 134, "html": "Tiempo 1231006505 (3-ene-2009 18:15:05 UTC), nonce 2083236893, nBits 0x1d00ffff, versión 1, 50 BTC."}, {"line": 136, "html": "El hash debe ser exactamente este. Compruébalo tú mismo abajo."}]</script></figure>
+<div class="game" data-game="genesis"></div>
+
+<h2>Parámetros de la red principal</h2>
+<figure class="cref" id="c12" data-start="84" data-file="src/kernel/chainparams.cpp"><figcaption><span class="cref-file">src/kernel/chainparams.cpp</span><span class="cref-lines">líneas 84–101</span><span class="cref-title">mainnet</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/kernel/chainparams.cpp#L84-L101" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/kernel/chainparams.cpp&amp;l=84" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">        consensus.nSubsidyHalvingInterval = 210000;
+        consensus.script_flag_exceptions.emplace( // BIP16 exception
+            uint256{&quot;00000000000002dc756eebf4f49723ed8d30cc28a5f108eb94b1ba88ac4f9c22&quot;}, SCRIPT_VERIFY_NONE);
+        consensus.script_flag_exceptions.emplace( // Taproot exception
+            uint256{&quot;0000000000000000000f14c35b2d841e986ab5441de8c585d5ffe55ea1e395ad&quot;}, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS);
+        consensus.BIP34Height = 227931;
+        consensus.BIP34Hash = uint256{&quot;000000000000024b89b42a942fe0d9fea3bb44ab7bd1b19115dd6a759c0808b8&quot;};
+        consensus.BIP65Height = 388381; // 000000000000000004c2b624ed5d7756c508d90fd0da2c7c679febfa6c4735f0
+        consensus.BIP66Height = 363725; // 00000000000000000379eaa19dce8c9b722d46ae6a57c2f1a988119488b50931
+        consensus.CSVHeight = 419328; // 000000000000000004a1b34462cb8aeebd5799177f7a29cf28f2d1961716b5b5
+        consensus.SegwitHeight = 481824; // 0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893
+        consensus.MinBIP9WarningHeight = 483840; // segwit activation height + miner confirmation window
+        consensus.powLimit = uint256{&quot;00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff&quot;};
+        consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
+        consensus.nPowTargetSpacing = 10 * 60;
+        consensus.fPowAllowMinDifficultyBlocks = false;
+        consensus.enforce_BIP94 = false;
+        consensus.fPowNoRetargeting = false;</code></pre><script type="application/json" class="cref-notes">[{"line": 84, "html": "Halving cada 210 000 bloques."}, {"line": 85, "html": "Excepciones históricas: un par de bloques concretos que se validan con reglas especiales porque se minaron justo durante transiciones."}, {"line": 89, "html": "Alturas a partir de las cuales se aplican soft forks antiguos (ya «enterrados»: se activan por altura fija, nivel 10)."}, {"line": 94, "html": "SegWit: activo desde el bloque 481 824 (agosto de 2017)."}, {"line": 96, "html": "El objetivo más fácil permitido (dificultad 1)."}, {"line": 97, "html": "2 semanas…"}, {"line": 98, "html": "…entre bloques de 10 minutos → 2016 bloques por período."}, {"line": 99, "html": "En mainnet no hay atajos de dificultad."}]</script></figure>
+
+<div class="quiz" data-title="Test del nivel 5"><script type="application/json">[
+{"q":"¿Cuántos bytes tiene una cabecera de bloque?","o":["32","80","1 MB","Depende del bloque"],"a":1,"why":"4+32+32+4+4+4 = 80."},
+{"q":"¿Cuándo es válida la prueba de trabajo?","o":["Cuando el hash empieza por 0","Cuando el hash (como número) es ≤ al objetivo derivado de nBits","Cuando el nonce es par","Cuando lo dicen los mineros"],"a":1,"why":"CheckProofOfWorkImpl: UintToArith256(hash) > bnTarget → falso."},
+{"q":"Si un período de 2016 bloques tarda 1 semana, ¿qué pasa?","o":["La dificultad se reduce a la mitad","La dificultad se duplica (el objetivo se divide por 2)","No cambia","Se detiene la red"],"a":1,"why":"bnNew = viejo × 1 semana / 2 semanas."},
+{"q":"¿Cuál es la recompensa en el halving número 4 (bloques 840 000–1 049 999)?","o":["6,25 BTC","3,125 BTC","1,5625 BTC","12,5 BTC"],"a":1,"why":"50 >> 4 = 3,125 BTC."},
+{"q":"¿Qué hace el código si una lista de transacciones duplica las dos últimas y da la misma raíz de Merkle?","o":["La acepta","Lo detecta como bloque mutado (bad-txns-duplicate)","Se bloquea","Cambia la raíz"],"a":1,"why":"ComputeMerkleRoot marca mutation y CheckMerkleRoot rechaza."},
+{"q":"¿Dónde se define la política monetaria de Bitcoin?","o":["En un documento de la fundación","En GetBlockSubsidy (validation.cpp) y la comprobación bad-cb-amount de ConnectBlock","En los exchanges","En la cartera"],"a":1,"why":"Unas pocas líneas que cualquiera puede leer y que todos los nodos aplican."}
+]</script></div>
+
+    <nav class="prevnext"><a class="prev" href="nivel-4.html"><span>← Anterior</span>Nivel 4 · Script: el lenguaje que bloquea las monedas</a><a class="next" href="nivel-6.html"><span>Siguiente →</span>Nivel 6 · Validación: el corazón del consenso</a></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+<script type="module" src="assets/diagrams.js"></script>
+</body>
+</html>

@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nivel 4 · Script: el lenguaje que bloquea las monedas · Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="nivel-4">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html">3 · Transacciones</a></li>
+<li><a href="nivel-4.html" class="active">4 · Script</a></li>
+<li><a href="nivel-5.html">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html">8 · Red P2P</a></li>
+<li><a href="nivel-9.html">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <div class="kicker">Nivel 4 · Lógica de gasto</div>
+<h1>Script: el lenguaje que bloquea las monedas</h1>
+<p class="lead">Cada moneda lleva un pequeño programa-candado (<code>scriptPubKey</code>). Para gastarla hay que aportar datos (<code>scriptSig</code> o testigo) que, al ejecutarse junto con el candado, terminen en «verdadero». El intérprete que ejecuta esto es uno de los archivos más críticos de Bitcoin: <a class="srclink" href="explorador.html#f=src/script/interpreter.cpp">src/script/interpreter.cpp</a>.</p>
+
+<h2>Una calculadora de pila</h2>
+<p>Script es como una calculadora antigua de notación polaca inversa: lee instrucciones de izquierda a derecha; los <b>datos</b> se apilan y los <b>operadores</b> (opcodes) toman elementos de arriba de la pila y dejan el resultado.</p>
+<div class="analogy">Un montón de platos. «2» pone un plato con un 2. «3» pone otro con un 3. «OP_ADD» quita los dos de arriba, los suma y pone un plato con un 5. «5 OP_EQUAL» compara: si los dos de arriba son iguales, deja «verdadero».</div>
+<p>Script <b>no tiene bucles</b> a propósito: así cualquier programa termina siempre y su coste es predecible. No es «Turing completo», y eso es una característica de seguridad.</p>
+
+<div class="game" data-game="script"></div>
+
+<h2>Los límites del lenguaje</h2>
+<figure class="cref" id="c1" data-start="27" data-file="src/script/script.h"><figcaption><span class="cref-file">src/script/script.h</span><span class="cref-lines">líneas 27–47</span><span class="cref-title">límites de consenso</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/script.h#L27-L47" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/script.h&amp;l=27" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">// Maximum number of bytes pushable to the stack
+static const unsigned int MAX_SCRIPT_ELEMENT_SIZE = 520;
+
+// Maximum number of non-push operations per script
+static const int MAX_OPS_PER_SCRIPT = 201;
+
+// Maximum number of public keys per multisig
+static const int MAX_PUBKEYS_PER_MULTISIG = 20;
+
+/** The limit of keys in OP_CHECKSIGADD-based scripts. It is due to the stack limit in BIP342. */
+static constexpr unsigned int MAX_PUBKEYS_PER_MULTI_A = 999;
+
+// Maximum script length in bytes
+static const int MAX_SCRIPT_SIZE = 10000;
+
+// Maximum number of values on script interpreter stack
+static const int MAX_STACK_SIZE = 1000;
+
+// Threshold for nLockTime: below this value it is interpreted as block number,
+// otherwise as UNIX timestamp.
+static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20 1985 UTC</code></pre><script type="application/json" class="cref-notes">[{"line": 28, "html": "Ningún dato apilado puede superar 520 bytes."}, {"line": 31, "html": "Como mucho 201 opcodes «de verdad» por script (los de empujar datos no cuentan)."}, {"line": 34, "html": "Multifirma clásica: hasta 20 claves."}, {"line": 40, "html": "Un script no puede pasar de 10 000 bytes."}, {"line": 43, "html": "Pila + pila alternativa: máximo 1000 elementos."}, {"line": 47, "html": "El umbral entre «altura» y «fecha» para los bloqueos de tiempo (visto en el nivel 3)."}]</script></figure>
+
+<h2>El bucle principal: EvalScript</h2>
+<p>Esta función recorre el script instrucción a instrucción. Es larga (unas 830 líneas) pero muy regular: un gran <code>switch</code> con un <code>case</code> por opcode. Primero, la preparación y la lectura de cada instrucción:</p>
+<figure class="cref" id="c2" data-start="407" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 407–484</span><span class="cref-title">inicio de EvalScript</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L407-L484" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=407" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool EvalScript(std::vector&lt;std::vector&lt;unsigned char&gt; &gt;&amp; stack, const CScript&amp; script, script_verify_flags flags, const BaseSignatureChecker&amp; checker, SigVersion sigversion, ScriptExecutionData&amp; execdata, ScriptError* serror)
+{
+    static const CScriptNum bnZero(0);
+    static const CScriptNum bnOne(1);
+    // static const CScriptNum bnFalse(0);
+    // static const CScriptNum bnTrue(1);
+    static const valtype vchFalse(0);
+    // static const valtype vchZero(0);
+    static const valtype vchTrue(1, 1);
+
+    // sigversion cannot be TAPROOT here, as it admits no script execution.
+    assert(sigversion == SigVersion::BASE || sigversion == SigVersion::WITNESS_V0 || sigversion == SigVersion::TAPSCRIPT);
+
+    CScript::const_iterator pc = script.begin();
+    CScript::const_iterator pend = script.end();
+    CScript::const_iterator pbegincodehash = script.begin();
+    opcodetype opcode;
+    valtype vchPushValue;
+    ConditionStack vfExec;
+    std::vector&lt;valtype&gt; altstack;
+    set_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
+    if ((sigversion == SigVersion::BASE || sigversion == SigVersion::WITNESS_V0) &amp;&amp; script.size() &gt; MAX_SCRIPT_SIZE) {
+        return set_error(serror, SCRIPT_ERR_SCRIPT_SIZE);
+    }
+    int nOpCount = 0;
+    bool fRequireMinimal = (flags &amp; SCRIPT_VERIFY_MINIMALDATA) != 0;
+    uint32_t opcode_pos = 0;
+    execdata.m_codeseparator_pos = 0xFFFFFFFFUL;
+    execdata.m_codeseparator_pos_init = true;
+
+    try
+    {
+        for (; pc &lt; pend; ++opcode_pos) {
+            bool fExec = vfExec.all_true();
+
+            //
+            // Read instruction
+            //
+            if (!script.GetOp(pc, opcode, vchPushValue))
+                return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+            if (vchPushValue.size() &gt; MAX_SCRIPT_ELEMENT_SIZE)
+                return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
+
+            if (sigversion == SigVersion::BASE || sigversion == SigVersion::WITNESS_V0) {
+                // Note how OP_RESERVED does not count towards the opcode limit.
+                if (opcode &gt; OP_16 &amp;&amp; ++nOpCount &gt; MAX_OPS_PER_SCRIPT) {
+                    return set_error(serror, SCRIPT_ERR_OP_COUNT);
+                }
+            }
+
+            if (opcode == OP_CAT ||
+                opcode == OP_SUBSTR ||
+                opcode == OP_LEFT ||
+                opcode == OP_RIGHT ||
+                opcode == OP_INVERT ||
+                opcode == OP_AND ||
+                opcode == OP_OR ||
+                opcode == OP_XOR ||
+                opcode == OP_2MUL ||
+                opcode == OP_2DIV ||
+                opcode == OP_MUL ||
+                opcode == OP_DIV ||
+                opcode == OP_MOD ||
+                opcode == OP_LSHIFT ||
+                opcode == OP_RSHIFT)
+                return set_error(serror, SCRIPT_ERR_DISABLED_OPCODE); // Disabled opcodes (CVE-2010-5137).
+
+            // With SCRIPT_VERIFY_CONST_SCRIPTCODE, OP_CODESEPARATOR in non-segwit script is rejected even in an unexecuted branch
+            if (opcode == OP_CODESEPARATOR &amp;&amp; sigversion == SigVersion::BASE &amp;&amp; (flags &amp; SCRIPT_VERIFY_CONST_SCRIPTCODE))
+                return set_error(serror, SCRIPT_ERR_OP_CODESEPARATOR);
+
+            if (fExec &amp;&amp; 0 &lt;= opcode &amp;&amp; opcode &lt;= OP_PUSHDATA4) {
+                if (fRequireMinimal &amp;&amp; !CheckMinimalPush(vchPushValue, opcode)) {
+                    return set_error(serror, SCRIPT_ERR_MINIMALDATA);
+                }
+                stack.push_back(vchPushValue);
+            } else if (fExec || (OP_IF &lt;= opcode &amp;&amp; opcode &lt;= OP_ENDIF))
+            switch (opcode)</code></pre><script type="application/json" class="cref-notes">[{"line": 413, "html": "«Falso» es un vector vacío; «verdadero» es el byte 1."}, {"line": 418, "html": "Hay tres «sabores» de ejecución: BASE (scripts clásicos), WITNESS_V0 (SegWit) y TAPSCRIPT (Taproot). Algunas reglas cambian según el sabor."}, {"line": 420, "html": "<code>pc<\/code> («program counter») apunta a la instrucción actual."}, {"line": 425, "html": "<code>vfExec<\/code> recuerda, para cada IF abierto, si estamos en una rama que se ejecuta o que se salta."}, {"line": 426, "html": "Una segunda pila auxiliar."}, {"line": 428, "html": "Primer límite: tamaño del script."}, {"line": 440, "html": "¿Estamos en una rama activa? Sólo si todos los IF abiertos son verdaderos."}, {"line": 445, "html": "Lee la siguiente instrucción. Si el script está cortado a mitad de un dato, error."}, {"line": 447, "html": "Límite de 520 bytes por elemento."}, {"line": 452, "html": "Cuenta opcodes (en scripts no Taproot)."}, {"line": 457, "html": "Estos opcodes están <b>desactivados<\/b> desde 2010 (CVE-2010-5137): Satoshi los quitó porque algunos permitían ataques de denegación de servicio (p. ej. OP_CAT o OP_MUL creando datos gigantes). Aparecer en una rama ejecutada <i>o no<\/i> invalida el script."}, {"line": 478, "html": "Si es un dato y estamos en rama activa, se apila (exigiendo la codificación mínima si la bandera MINIMALDATA está activa)."}, {"line": 483, "html": "Los opcodes sólo se ejecutan en ramas activas… salvo IF/ELSE/ENDIF, que siempre hay que procesar para saber dónde termina cada rama."}]</script></figure>
+
+<h3>Control de flujo: IF / ELSE / ENDIF / VERIFY / RETURN</h3>
+<figure class="cref" id="c3" data-start="603" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 603–669</span><span class="cref-title">control de flujo</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L603-L669" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=603" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">                case OP_IF:
+                case OP_NOTIF:
+                {
+                    // &lt;expression&gt; if [statements] [else [statements]] endif
+                    bool fValue = false;
+                    if (fExec)
+                    {
+                        if (stack.size() &lt; 1)
+                            return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                        valtype&amp; vch = stacktop(-1);
+                        // Tapscript requires minimal IF/NOTIF inputs as a consensus rule.
+                        if (sigversion == SigVersion::TAPSCRIPT) {
+                            // The input argument to the OP_IF and OP_NOTIF opcodes must be either
+                            // exactly 0 (the empty vector) or exactly 1 (the one-byte vector with value 1).
+                            if (vch.size() &gt; 1 || (vch.size() == 1 &amp;&amp; vch[0] != 1)) {
+                                return set_error(serror, SCRIPT_ERR_TAPSCRIPT_MINIMALIF);
+                            }
+                        }
+                        // Under witness v0 rules it is only a policy rule, enabled through SCRIPT_VERIFY_MINIMALIF.
+                        if (sigversion == SigVersion::WITNESS_V0 &amp;&amp; (flags &amp; SCRIPT_VERIFY_MINIMALIF)) {
+                            if (vch.size() &gt; 1)
+                                return set_error(serror, SCRIPT_ERR_MINIMALIF);
+                            if (vch.size() == 1 &amp;&amp; vch[0] != 1)
+                                return set_error(serror, SCRIPT_ERR_MINIMALIF);
+                        }
+                        fValue = CastToBool(vch);
+                        if (opcode == OP_NOTIF)
+                            fValue = !fValue;
+                        popstack(stack);
+                    }
+                    vfExec.push_back(fValue);
+                }
+                break;
+
+                case OP_ELSE:
+                {
+                    if (vfExec.empty())
+                        return set_error(serror, SCRIPT_ERR_UNBALANCED_CONDITIONAL);
+                    vfExec.toggle_top();
+                }
+                break;
+
+                case OP_ENDIF:
+                {
+                    if (vfExec.empty())
+                        return set_error(serror, SCRIPT_ERR_UNBALANCED_CONDITIONAL);
+                    vfExec.pop_back();
+                }
+                break;
+
+                case OP_VERIFY:
+                {
+                    // (true -- ) or
+                    // (false -- false) and return
+                    if (stack.size() &lt; 1)
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    bool fValue = CastToBool(stacktop(-1));
+                    if (fValue)
+                        popstack(stack);
+                    else
+                        return set_error(serror, SCRIPT_ERR_VERIFY);
+                }
+                break;
+
+                case OP_RETURN:
+                {
+                    return set_error(serror, SCRIPT_ERR_OP_RETURN);</code></pre><script type="application/json" class="cref-notes">[{"line": 608, "html": "Si estamos dentro de una rama saltada, el IF no consume nada: sólo apila «falso» para que su rama también se salte."}, {"line": 614, "html": "En Tapscript, el valor del IF debe ser exactamente vacío o exactamente <code>01<\/code> (regla de consenso). Evita que alguien cambie la transacción usando otra representación de «verdadero» (maleabilidad)."}, {"line": 622, "html": "En SegWit v0 esa misma regla es sólo de política (la aplica tu mempool, no el consenso)."}, {"line": 628, "html": "Convierte el dato a booleano (ver abajo)."}, {"line": 633, "html": "Recuerda si esta rama se ejecuta."}, {"line": 641, "html": "ELSE invierte la rama actual."}, {"line": 649, "html": "ENDIF la cierra."}, {"line": 663, "html": "VERIFY: si la cima no es verdadera, el script falla en el acto."}, {"line": 669, "html": "OP_RETURN hace fallar siempre. Por eso las salidas que empiezan por OP_RETURN son imposibles de gastar y se usan para guardar datos."}]</script></figure>
+<figure class="cref" id="c4" data-start="36" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 36–49</span><span class="cref-title">¿qué es «verdadero»?</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L36-L49" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=36" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool CastToBool(const valtype&amp; vch)
+{
+    for (unsigned int i = 0; i &lt; vch.size(); i++)
+    {
+        if (vch[i] != 0)
+        {
+            // Can be negative zero
+            if (i == vch.size()-1 &amp;&amp; vch[i] == 0x80)
+                return false;
+            return true;
+        }
+    }
+    return false;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 40, "html": "Cualquier byte distinto de cero hace que sea verdadero…"}, {"line": 43, "html": "…salvo el «cero negativo»: todo ceros y un 0x80 final (en Script los números usan el bit alto del último byte como signo)."}]</script></figure>
+
+<h3>Opcodes de pila y comparación</h3>
+<figure class="cref" id="c5" data-start="794" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 794–802</span><span class="cref-title">OP_DUP</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L794-L802" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=794" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">                case OP_DUP:
+                {
+                    // (x -- x x)
+                    if (stack.size() &lt; 1)
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    valtype vch = stacktop(-1);
+                    stack.push_back(vch);
+                }
+                break;</code></pre><script type="application/json" class="cref-notes">[{"line": 797, "html": "Casi todos los opcodes empiezan igual: comprobar que hay suficientes elementos. Si no, error (nunca leer memoria que no existe)."}, {"line": 800, "html": "Copia la cima y la apila."}]</script></figure>
+<figure class="cref" id="c6" data-start="887" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 887–910</span><span class="cref-title">OP_EQUAL y OP_EQUALVERIFY</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L887-L910" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=887" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">                case OP_EQUAL:
+                case OP_EQUALVERIFY:
+                //case OP_NOTEQUAL: // use OP_NUMNOTEQUAL
+                {
+                    // (x1 x2 - bool)
+                    if (stack.size() &lt; 2)
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    valtype&amp; vch1 = stacktop(-2);
+                    valtype&amp; vch2 = stacktop(-1);
+                    bool fEqual = (vch1 == vch2);
+                    // OP_NOTEQUAL is disabled because it would be too easy to say
+                    // something like n != 1 and have some wiseguy pass in 1 with extra
+                    // zero bytes after it (numerically, 0x01 == 0x0001 == 0x000001)
+                    //if (opcode == OP_NOTEQUAL)
+                    //    fEqual = !fEqual;
+                    popstack(stack);
+                    popstack(stack);
+                    stack.push_back(fEqual ? vchTrue : vchFalse);
+                    if (opcode == OP_EQUALVERIFY)
+                    {
+                        if (fEqual)
+                            popstack(stack);
+                        else
+                            return set_error(serror, SCRIPT_ERR_EQUALVERIFY);</code></pre><script type="application/json" class="cref-notes">[{"line": 896, "html": "Comparación <b>byte a byte<\/b>, no numérica."}, {"line": 897, "html": "Comentario histórico de Satoshi: no hay OP_NOTEQUAL porque <code>01<\/code> y <code>0100<\/code> son el mismo número pero bytes distintos; un listillo podría aprovecharlo."}, {"line": 904, "html": "Deja verdadero o falso…"}, {"line": 905, "html": "…y la versión VERIFY además exige que sea verdadero."}]</script></figure>
+
+<h3>Opcodes criptográficos</h3>
+<figure class="cref" id="c7" data-start="1022" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 1022–1046</span><span class="cref-title">hashes</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L1022-L1046" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1022" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">                case OP_RIPEMD160:
+                case OP_SHA1:
+                case OP_SHA256:
+                case OP_HASH160:
+                case OP_HASH256:
+                {
+                    // (in -- hash)
+                    if (stack.size() &lt; 1)
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                    valtype&amp; vch = stacktop(-1);
+                    valtype vchHash((opcode == OP_RIPEMD160 || opcode == OP_SHA1 || opcode == OP_HASH160) ? 20 : 32);
+                    if (opcode == OP_RIPEMD160)
+                        CRIPEMD160().Write(vch.data(), vch.size()).Finalize(vchHash.data());
+                    else if (opcode == OP_SHA1)
+                        CSHA1().Write(vch.data(), vch.size()).Finalize(vchHash.data());
+                    else if (opcode == OP_SHA256)
+                        CSHA256().Write(vch.data(), vch.size()).Finalize(vchHash.data());
+                    else if (opcode == OP_HASH160)
+                        CHash160().Write(vch).Finalize(vchHash);
+                    else if (opcode == OP_HASH256)
+                        CHash256().Write(vch).Finalize(vchHash);
+                    popstack(stack);
+                    stack.push_back(vchHash);
+                }
+                break;</code></pre><script type="application/json" class="cref-notes">[{"line": 1032, "html": "El resultado mide 20 bytes (RIPEMD160, SHA1, HASH160) o 32 (SHA256, HASH256)."}, {"line": 1040, "html": "OP_HASH160 = RIPEMD160(SHA256(x)): lo que se usa en direcciones 1… y bc1q…."}, {"line": 1043, "html": "Quita el dato original y apila su hash."}]</script></figure>
+<figure class="cref" id="c8" data-start="1059" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 1059–1084</span><span class="cref-title">OP_CHECKSIG</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L1059-L1084" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1059" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">                case OP_CHECKSIG:
+                case OP_CHECKSIGVERIFY:
+                {
+                    // (sig pubkey -- bool)
+                    if (stack.size() &lt; 2)
+                        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+
+                    valtype&amp; vchSig    = stacktop(-2);
+                    valtype&amp; vchPubKey = stacktop(-1);
+
+                    bool fSuccess = true;
+                    if (!EvalChecksig(vchSig, vchPubKey, pbegincodehash, pend, execdata, flags, checker, sigversion, serror, fSuccess)) return false;
+                    popstack(stack);
+                    popstack(stack);
+                    stack.push_back(fSuccess ? vchTrue : vchFalse);
+                    if (opcode == OP_CHECKSIGVERIFY)
+                    {
+                        if (fSuccess)
+                            popstack(stack);
+                        else
+                            return set_error(serror, SCRIPT_ERR_CHECKSIGVERIFY);
+                    }
+                }
+                break;
+
+                case OP_CHECKSIGADD:</code></pre><script type="application/json" class="cref-notes">[{"line": 1066, "html": "El penúltimo elemento es la firma…"}, {"line": 1067, "html": "…y la cima, la clave pública."}, {"line": 1070, "html": "Verifica: comprueba la codificación, calcula <b>qué<\/b> se firmó (el «sighash», abajo) y llama a libsecp256k1. Si la firma está mal codificada devuelve error; si es simplemente incorrecta, <code>fSuccess<\/code> = falso."}, {"line": 1073, "html": "Resultado a la pila."}]</script></figure>
+<figure class="cref" id="c9" data-start="321" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 321–345</span><span class="cref-title">comprobación de firma (scripts clásicos y SegWit v0)</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L321-L345" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=321" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static bool EvalChecksigPreTapscript(const valtype&amp; vchSig, const valtype&amp; vchPubKey, CScript::const_iterator pbegincodehash, CScript::const_iterator pend, script_verify_flags flags, const BaseSignatureChecker&amp; checker, SigVersion sigversion, ScriptError* serror, bool&amp; fSuccess)
+{
+    assert(sigversion == SigVersion::BASE || sigversion == SigVersion::WITNESS_V0);
+
+    // Subset of script starting at the most recent codeseparator
+    CScript scriptCode(pbegincodehash, pend);
+
+    // Drop the signature in pre-segwit scripts but not segwit scripts
+    if (sigversion == SigVersion::BASE) {
+        int found = FindAndDelete(scriptCode, CScript() &lt;&lt; vchSig);
+        if (found &gt; 0 &amp;&amp; (flags &amp; SCRIPT_VERIFY_CONST_SCRIPTCODE))
+            return set_error(serror, SCRIPT_ERR_SIG_FINDANDDELETE);
+    }
+
+    if (!CheckSignatureEncoding(vchSig, flags, serror) || !CheckPubKeyEncoding(vchPubKey, flags, sigversion, serror)) {
+        //serror is set
+        return false;
+    }
+    fSuccess = checker.CheckECDSASignature(vchSig, vchPubKey, scriptCode, sigversion);
+
+    if (!fSuccess &amp;&amp; (flags &amp; SCRIPT_VERIFY_NULLFAIL) &amp;&amp; vchSig.size())
+        return set_error(serror, SCRIPT_ERR_SIG_NULLFAIL);
+
+    return true;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 326, "html": "El «scriptCode» es la parte del script que la firma cubre."}, {"line": 330, "html": "Rareza histórica: en scripts antiguos se borra la propia firma del scriptCode antes de verificar (una firma no puede firmarse a sí misma). SegWit eliminó esta peculiaridad."}, {"line": 335, "html": "Codificación estricta DER (BIP66) y tipo de sighash válido."}, {"line": 339, "html": "Aquí se calcula el sighash y se verifica con secp256k1."}, {"line": 341, "html": "Si la firma falla, debe estar vacía (si no, se podrían meter firmas basura sin consecuencias = maleabilidad)."}]</script></figure>
+
+<h3>El final de EvalScript</h3>
+<figure class="cref" id="c10" data-start="1221" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 1221–1238</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L1221-L1238" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1221" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">            // Size limits
+            if (stack.size() + altstack.size() &gt; MAX_STACK_SIZE)
+                return set_error(serror, SCRIPT_ERR_STACK_SIZE);
+        }
+    }
+    catch (const scriptnum_error&amp;)
+    {
+        return set_error(serror, SCRIPT_ERR_SCRIPTNUM);
+    }
+    catch (...)
+    {
+        return set_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
+    }
+
+    if (!vfExec.empty())
+        return set_error(serror, SCRIPT_ERR_UNBALANCED_CONDITIONAL);
+
+    return set_success(serror);</code></pre><script type="application/json" class="cref-notes">[{"line": 1222, "html": "Tras cada instrucción, límite de 1000 elementos."}, {"line": 1226, "html": "Los números de Script están limitados a 4 bytes; si una operación aritmética recibe algo más largo, lanza una excepción que aquí se convierte en error."}, {"line": 1235, "html": "Un IF sin su ENDIF invalida el script."}]</script></figure>
+
+<h2>¿Qué se firma exactamente? El «sighash»</h2>
+<p>Una firma no firma «la transacción» tal cual (contiene las propias firmas…), sino un resumen calculado con reglas precisas. El último byte de la firma indica qué partes se cubren:</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Tipo</th><th>Valor</th><th>Significa</th></tr></thead>
+<tbody>
+<tr><td><code>SIGHASH_ALL</code></td><td>0x01</td><td>Firmo todas las entradas y todas las salidas (lo normal).</td></tr>
+<tr><td><code>SIGHASH_NONE</code></td><td>0x02</td><td>Firmo las entradas, pero las salidas pueden cambiar («me da igual adónde vaya»).</td></tr>
+<tr><td><code>SIGHASH_SINGLE</code></td><td>0x03</td><td>Firmo sólo la salida con mi mismo índice.</td></tr>
+<tr><td><code>| ANYONECANPAY</code></td><td>0x80</td><td>Sólo firmo mi entrada: otros pueden añadir entradas (útil para colectas).</td></tr>
+<tr><td><code>SIGHASH_DEFAULT</code></td><td>0x00</td><td>Sólo Taproot: equivale a ALL y ahorra un byte.</td></tr>
+</tbody></table></div>
+<figure class="cref" id="c11" data-start="1600" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 1600–1660</span><span class="cref-title">sighash de SegWit v0 (BIP143)</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L1600-L1660" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1600" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">uint256 SignatureHash(const CScript&amp; scriptCode, const T&amp; txTo, unsigned int nIn, int32_t nHashType, const CAmount&amp; amount, SigVersion sigversion, const PrecomputedTransactionData* cache, SigHashCache* sighash_cache)
+{
+    assert(nIn &lt; txTo.vin.size());
+
+    if (sigversion != SigVersion::WITNESS_V0) {
+        // Check for invalid use of SIGHASH_SINGLE
+        if ((nHashType &amp; 0x1f) == SIGHASH_SINGLE) {
+            if (nIn &gt;= txTo.vout.size()) {
+                //  nOut out of range
+                return uint256::ONE;
+            }
+        }
+    }
+
+    HashWriter ss{};
+
+    // Try to compute using cached SHA256 midstate.
+    if (sighash_cache &amp;&amp; sighash_cache-&gt;Load(nHashType, scriptCode, ss)) {
+        // Add sighash type and hash.
+        ss &lt;&lt; nHashType;
+        return ss.GetHash();
+    }
+
+    if (sigversion == SigVersion::WITNESS_V0) {
+        uint256 hashPrevouts;
+        uint256 hashSequence;
+        uint256 hashOutputs;
+        const bool cacheready = cache &amp;&amp; cache-&gt;m_bip143_segwit_ready;
+
+        if (!(nHashType &amp; SIGHASH_ANYONECANPAY)) {
+            hashPrevouts = cacheready ? cache-&gt;hashPrevouts : SHA256Uint256(GetPrevoutsSHA256(txTo));
+        }
+
+        if (!(nHashType &amp; SIGHASH_ANYONECANPAY) &amp;&amp; (nHashType &amp; 0x1f) != SIGHASH_SINGLE &amp;&amp; (nHashType &amp; 0x1f) != SIGHASH_NONE) {
+            hashSequence = cacheready ? cache-&gt;hashSequence : SHA256Uint256(GetSequencesSHA256(txTo));
+        }
+
+        if ((nHashType &amp; 0x1f) != SIGHASH_SINGLE &amp;&amp; (nHashType &amp; 0x1f) != SIGHASH_NONE) {
+            hashOutputs = cacheready ? cache-&gt;hashOutputs : SHA256Uint256(GetOutputsSHA256(txTo));
+        } else if ((nHashType &amp; 0x1f) == SIGHASH_SINGLE &amp;&amp; nIn &lt; txTo.vout.size()) {
+            HashWriter inner_ss{};
+            inner_ss &lt;&lt; txTo.vout[nIn];
+            hashOutputs = inner_ss.GetHash();
+        }
+
+        // Version
+        ss &lt;&lt; txTo.version;
+        // Input prevouts/nSequence (none/all, depending on flags)
+        ss &lt;&lt; hashPrevouts;
+        ss &lt;&lt; hashSequence;
+        // The input being signed (replacing the scriptSig with scriptCode + amount)
+        // The prevout may already be contained in hashPrevout, and the nSequence
+        // may already be contain in hashSequence.
+        ss &lt;&lt; txTo.vin[nIn].prevout;
+        ss &lt;&lt; scriptCode;
+        ss &lt;&lt; amount;
+        ss &lt;&lt; txTo.vin[nIn].nSequence;
+        // Outputs (none/one/all, depending on flags)
+        ss &lt;&lt; hashOutputs;
+        // Locktime
+        ss &lt;&lt; txTo.nLockTime;</code></pre><script type="application/json" class="cref-notes">[{"line": 1609, "html": "El famoso bug de SIGHASH_SINGLE en scripts antiguos: si no hay salida con ese índice, se «firma» el número 1. Se mantiene porque cambiarlo sería un hard fork."}, {"line": 1623, "html": "SegWit v0 (BIP143) rediseñó el cálculo para que fuera lineal (el antiguo era cuadrático: una transacción grande podía tardar minutos en verificarse)."}, {"line": 1630, "html": "Hash de todas las monedas gastadas (salvo ANYONECANPAY). Se calcula una vez y se reutiliza para todas las entradas."}, {"line": 1655, "html": "Novedad importante: se firma el <b>valor<\/b> de la moneda gastada. Así una cartera sin conexión (hardware) sabe cuánto está gastando."}, {"line": 1658, "html": "Hash de las salidas, según el tipo de sighash."}]</script></figure>
+
+<h2>De script a script: VerifyScript</h2>
+<p>Esta es la función que llama la validación para cada entrada. Junta el desbloqueo y el candado y aplica las reglas especiales de P2SH y SegWit.</p>
+<pre class="mermaid">
+flowchart TD
+  A["EvalScript(scriptSig)"] --> B["EvalScript(scriptPubKey)<br/>sobre la MISMA pila"]
+  B --> C{"¿cima verdadera?"}
+  C -- no --> X["✘ EVAL_FALSE"]
+  C -- sí --> D{"¿scriptPubKey es<br/>programa de testigo?<br/>(OP_0/OP_1 + 20/32 bytes)"}
+  D -- sí --> W["VerifyWitnessProgram<br/>P2WPKH / P2WSH / Taproot"]
+  D -- no --> E{"¿es P2SH?<br/>OP_HASH160 h OP_EQUAL"}
+  E -- sí --> F["Ejecuta el redeemScript<br/>(último dato del scriptSig)"]
+  E -- no --> OK["✔ válido"]
+  F --> G{"¿redeemScript es<br/>programa de testigo?"}
+  G -- sí --> W
+  G -- no --> OK
+  W --> OK
+</pre>
+<figure class="cref" id="c12" data-start="2002" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 2002–2121</span><span class="cref-title">verificar una entrada completa</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L2002-L2121" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=2002" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">bool VerifyScript(const CScript&amp; scriptSig, const CScript&amp; scriptPubKey, const CScriptWitness* witness, script_verify_flags flags, const BaseSignatureChecker&amp; checker, ScriptError* serror)
+{
+    static const CScriptWitness emptyWitness;
+    if (witness == nullptr) {
+        witness = &amp;emptyWitness;
+    }
+    bool hadWitness = false;
+
+    set_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
+
+    if ((flags &amp; SCRIPT_VERIFY_SIGPUSHONLY) != 0 &amp;&amp; !scriptSig.IsPushOnly()) {
+        return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
+    }
+
+    // scriptSig and scriptPubKey must be evaluated sequentially on the same stack
+    // rather than being simply concatenated (see CVE-2010-5141)
+    std::vector&lt;std::vector&lt;unsigned char&gt; &gt; stack, stackCopy;
+    if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
+        // serror is set
+        return false;
+    if (flags &amp; SCRIPT_VERIFY_P2SH)
+        stackCopy = stack;
+    if (!EvalScript(stack, scriptPubKey, flags, checker, SigVersion::BASE, serror))
+        // serror is set
+        return false;
+    if (stack.empty())
+        return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+    if (CastToBool(stack.back()) == false)
+        return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+
+    // Bare witness programs
+    int witnessversion;
+    std::vector&lt;unsigned char&gt; witnessprogram;
+    if (flags &amp; SCRIPT_VERIFY_WITNESS) {
+        if (scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
+            hadWitness = true;
+            if (scriptSig.size() != 0) {
+                // The scriptSig must be _exactly_ CScript(), otherwise we reintroduce malleability.
+                return set_error(serror, SCRIPT_ERR_WITNESS_MALLEATED);
+            }
+            if (!VerifyWitnessProgram(*witness, witnessversion, witnessprogram, flags, checker, serror, /*is_p2sh=*/false)) {
+                return false;
+            }
+            // Bypass the cleanstack check at the end. The actual stack is obviously not clean
+            // for witness programs.
+            stack.resize(1);
+        }
+    }
+
+    // Additional validation for spend-to-script-hash transactions:
+    if ((flags &amp; SCRIPT_VERIFY_P2SH) &amp;&amp; scriptPubKey.IsPayToScriptHash())
+    {
+        // scriptSig must be literals-only or validation fails
+        if (!scriptSig.IsPushOnly())
+            return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
+
+        // Restore stack.
+        swap(stack, stackCopy);
+
+        // stack cannot be empty here, because if it was the
+        // P2SH  HASH &lt;&gt; EQUAL  scriptPubKey would be evaluated with
+        // an empty stack and the EvalScript above would return false.
+        assert(!stack.empty());
+
+        const valtype&amp; pubKeySerialized = stack.back();
+        CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());
+        popstack(stack);
+
+        if (!EvalScript(stack, pubKey2, flags, checker, SigVersion::BASE, serror))
+            // serror is set
+            return false;
+        if (stack.empty())
+            return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+        if (!CastToBool(stack.back()))
+            return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+
+        // P2SH witness program
+        if (flags &amp; SCRIPT_VERIFY_WITNESS) {
+            if (pubKey2.IsWitnessProgram(witnessversion, witnessprogram)) {
+                hadWitness = true;
+                if (scriptSig != CScript() &lt;&lt; std::vector&lt;unsigned char&gt;(pubKey2.begin(), pubKey2.end())) {
+                    // The scriptSig must be _exactly_ a single push of the redeemScript. Otherwise we
+                    // reintroduce malleability.
+                    return set_error(serror, SCRIPT_ERR_WITNESS_MALLEATED_P2SH);
+                }
+                if (!VerifyWitnessProgram(*witness, witnessversion, witnessprogram, flags, checker, serror, /*is_p2sh=*/true)) {
+                    return false;
+                }
+                // Bypass the cleanstack check at the end. The actual stack is obviously not clean
+                // for witness programs.
+                stack.resize(1);
+            }
+        }
+    }
+
+    // The CLEANSTACK check is only performed after potential P2SH evaluation,
+    // as the non-P2SH evaluation of a P2SH script will obviously not result in
+    // a clean stack (the P2SH inputs remain). The same holds for witness evaluation.
+    if ((flags &amp; SCRIPT_VERIFY_CLEANSTACK) != 0) {
+        // Disallow CLEANSTACK without P2SH, as otherwise a switch CLEANSTACK-&gt;P2SH+CLEANSTACK
+        // would be possible, which is not a softfork (and P2SH should be one).
+        assert((flags &amp; SCRIPT_VERIFY_P2SH) != 0);
+        assert((flags &amp; SCRIPT_VERIFY_WITNESS) != 0);
+        if (stack.size() != 1) {
+            return set_error(serror, SCRIPT_ERR_CLEANSTACK);
+        }
+    }
+
+    if (flags &amp; SCRIPT_VERIFY_WITNESS) {
+        // We can&#x27;t check for correct unexpected witness data if P2SH was off, so require
+        // that WITNESS implies P2SH. Otherwise, going from WITNESS-&gt;P2SH+WITNESS would be
+        // possible, which is not a softfork.
+        assert((flags &amp; SCRIPT_VERIFY_P2SH) != 0);
+        if (!hadWitness &amp;&amp; !witness-&gt;IsNull()) {
+            return set_error(serror, SCRIPT_ERR_WITNESS_UNEXPECTED);
+        }
+    }
+
+    return set_success(serror);
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 2012, "html": "Política: el scriptSig sólo debería contener datos, no opcodes."}, {"line": 2017, "html": "Agujero de julio de 2010: se concatenaban scriptSig y scriptPubKey en un solo script. Con un scriptSig «OP_1 OP_RETURN» (en aquella época OP_RETURN terminaba con éxito) cualquiera podía gastar cualquier moneda. Ahora se ejecutan por separado, compartiendo sólo la pila."}, {"line": 2019, "html": "Primero el desbloqueo…"}, {"line": 2023, "html": "(se guarda una copia de la pila para P2SH)"}, {"line": 2024, "html": "…después el candado, sobre la pila resultante."}, {"line": 2029, "html": "Al final, la cima debe ser verdadera."}, {"line": 2036, "html": "SegWit nativo: el candado es «versión + programa»."}, {"line": 2038, "html": "En SegWit nativo el scriptSig debe estar vacío: todo va en el testigo."}, {"line": 2052, "html": "P2SH (BIP16): el candado sólo contiene el hash de un script; el que gasta revela el script completo («redeemScript») y se ejecuta."}, {"line": 2059, "html": "Se recupera la pila tal y como la dejó el scriptSig."}, {"line": 2067, "html": "El último dato apilado es el redeemScript…"}, {"line": 2070, "html": "…y se ejecuta con el resto de la pila."}]</script></figure>
+
+<h2>SegWit y Taproot: VerifyWitnessProgram</h2>
+<figure class="cref" id="c13" data-start="1917" data-file="src/script/interpreter.cpp"><figcaption><span class="cref-file">src/script/interpreter.cpp</span><span class="cref-lines">líneas 1917–2000</span><span class="cref-title">los programas de testigo</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/script/interpreter.cpp#L1917-L2000" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1917" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static bool VerifyWitnessProgram(const CScriptWitness&amp; witness, int witversion, const std::vector&lt;unsigned char&gt;&amp; program, script_verify_flags flags, const BaseSignatureChecker&amp; checker, ScriptError* serror, bool is_p2sh)
+{
+    CScript exec_script; //!&lt; Actually executed script (last stack item in P2WSH; implied P2PKH script in P2WPKH; leaf script in P2TR)
+    std::span stack{witness.stack};
+    ScriptExecutionData execdata;
+
+    if (witversion == 0) {
+        if (program.size() == WITNESS_V0_SCRIPTHASH_SIZE) {
+            // BIP141 P2WSH: 32-byte witness v0 program (which encodes SHA256(script))
+            if (stack.size() == 0) {
+                return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
+            }
+            const valtype&amp; script_bytes = SpanPopBack(stack);
+            exec_script = CScript(script_bytes.begin(), script_bytes.end());
+            uint256 hash_exec_script;
+            CSHA256().Write(exec_script.data(), exec_script.size()).Finalize(hash_exec_script.begin());
+            if (memcmp(hash_exec_script.begin(), program.data(), 32)) {
+                return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+            }
+            return ExecuteWitnessScript(stack, exec_script, flags, SigVersion::WITNESS_V0, checker, execdata, serror);
+        } else if (program.size() == WITNESS_V0_KEYHASH_SIZE) {
+            // BIP141 P2WPKH: 20-byte witness v0 program (which encodes Hash160(pubkey))
+            if (stack.size() != 2) {
+                return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH); // 2 items in witness
+            }
+            exec_script &lt;&lt; OP_DUP &lt;&lt; OP_HASH160 &lt;&lt; program &lt;&lt; OP_EQUALVERIFY &lt;&lt; OP_CHECKSIG;
+            return ExecuteWitnessScript(stack, exec_script, flags, SigVersion::WITNESS_V0, checker, execdata, serror);
+        } else {
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WRONG_LENGTH);
+        }
+    } else if (witversion == 1 &amp;&amp; program.size() == WITNESS_V1_TAPROOT_SIZE &amp;&amp; !is_p2sh) {
+        // BIP341 Taproot: 32-byte non-P2SH witness v1 program (which encodes a P2C-tweaked pubkey)
+        if (!(flags &amp; SCRIPT_VERIFY_TAPROOT)) return set_success(serror);
+        if (stack.size() == 0) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
+        if (stack.size() &gt;= 2 &amp;&amp; !stack.back().empty() &amp;&amp; stack.back()[0] == ANNEX_TAG) {
+            // Drop annex (this is non-standard; see IsWitnessStandard)
+            const valtype&amp; annex = SpanPopBack(stack);
+            execdata.m_annex_hash = (HashWriter{} &lt;&lt; annex).GetSHA256();
+            execdata.m_annex_present = true;
+        } else {
+            execdata.m_annex_present = false;
+        }
+        execdata.m_annex_init = true;
+        if (stack.size() == 1) {
+            // Key path spending (stack size is 1 after removing optional annex)
+            if (!checker.CheckSchnorrSignature(stack.front(), program, SigVersion::TAPROOT, execdata, serror)) {
+                return false; // serror is set
+            }
+            return set_success(serror);
+        } else {
+            // Script path spending (stack size is &gt;1 after removing optional annex)
+            const valtype&amp; control = SpanPopBack(stack);
+            const valtype&amp; script = SpanPopBack(stack);
+            if (control.size() &lt; TAPROOT_CONTROL_BASE_SIZE || control.size() &gt; TAPROOT_CONTROL_MAX_SIZE || ((control.size() - TAPROOT_CONTROL_BASE_SIZE) % TAPROOT_CONTROL_NODE_SIZE) != 0) {
+                return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
+            }
+            execdata.m_tapleaf_hash = ComputeTapleafHash(control[0] &amp; TAPROOT_LEAF_MASK, script);
+            if (!VerifyTaprootCommitment(control, program, execdata.m_tapleaf_hash)) {
+                return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+            }
+            execdata.m_tapleaf_hash_init = true;
+            if ((control[0] &amp; TAPROOT_LEAF_MASK) == TAPROOT_LEAF_TAPSCRIPT) {
+                // Tapscript (leaf version 0xc0)
+                exec_script = CScript(script.begin(), script.end());
+                execdata.m_validation_weight_left = ::GetSerializeSize(witness.stack) + VALIDATION_WEIGHT_OFFSET;
+                execdata.m_validation_weight_left_init = true;
+                return ExecuteWitnessScript(stack, exec_script, flags, SigVersion::TAPSCRIPT, checker, execdata, serror);
+            }
+            if (flags &amp; SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) {
+                return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION);
+            }
+            return set_success(serror);
+        }
+    } else if (!is_p2sh &amp;&amp; CScript::IsPayToAnchor(witversion, program)) {
+        return true;
+    } else {
+        if (flags &amp; SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM) {
+            return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM);
+        }
+        // Other version/size/p2sh combinations return true for future softfork compatibility
+        return true;
+    }
+    // There is intentionally no return statement here, to be able to use &quot;control reaches end of non-void function&quot; warnings to detect gaps in the logic above.
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 1924, "html": "P2WSH: el programa (32 bytes) es el SHA-256 de un script."}, {"line": 1929, "html": "El último elemento del testigo es el script…"}, {"line": 1933, "html": "…cuyo hash debe coincidir con el programa."}, {"line": 1937, "html": "P2WPKH: el programa (20 bytes) es un HASH160 de clave."}, {"line": 1942, "html": "¡Se fabrica al vuelo el script P2PKH clásico! Por eso P2WPKH se comporta como P2PKH pero con la firma en el testigo."}, {"line": 1947, "html": "Taproot (versión 1, 32 bytes): el programa es una clave pública «retocada»."}, {"line": 1951, "html": "El «anexo» (byte 0x50): reservado para el futuro."}, {"line": 1960, "html": "Gasto por <b>clave<\/b>: un único elemento, una firma Schnorr. Es lo más común y más privado: nadie ve si había scripts alternativos."}, {"line": 1968, "html": "Gasto por <b>script<\/b>: se revela un script concreto y un «bloque de control» con la prueba de Merkle de que ese script estaba comprometido en la clave."}, {"line": 1974, "html": "Comprueba esa prueba: clave interna + camino de Merkle → debe dar exactamente el programa."}, {"line": 1983, "html": "Ejecuta el script con las reglas de Tapscript (BIP342)."}, {"line": 1988, "html": "Versiones de hoja desconocidas: éxito. Reservadas para futuros soft forks."}, {"line": 1996, "html": "Versiones de testigo 2–16 desconocidas: <b>cualquiera puede gastarlas<\/b> según las reglas actuales. Así un futuro soft fork puede darles significado sin romper nodos antiguos (nivel 10)."}]</script></figure>
+
+<h2>Todos los opcodes</h2>
+<p>Tabla generada automáticamente desde <code>script.h</code>, con la línea exacta donde <code>interpreter.cpp</code> implementa cada uno.</p>
+<div class="table-wrap tall"><div class="table-wrap"><table class="data compact"><thead><tr><th>Opcode</th><th>Valor</th><th>Definido</th><th>Implementado en interpreter.cpp</th></tr></thead><tbody>
+<tr><td><code>OP_0</code></td><td><code>0x00</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=76">script.h:76</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_FALSE</code></td><td><code>OP_0</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=77">script.h:77</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_PUSHDATA1</code></td><td><code>0x4c</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=78">script.h:78</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_PUSHDATA2</code></td><td><code>0x4d</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=79">script.h:79</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_PUSHDATA4</code></td><td><code>0x4e</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=80">script.h:80</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_1NEGATE</code></td><td><code>0x4f</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=81">script.h:81</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=489">línea 489</a></td></tr>
+<tr><td><code>OP_RESERVED</code></td><td><code>0x50</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=82">script.h:82</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_1</code></td><td><code>0x51</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=83">script.h:83</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=490">línea 490</a></td></tr>
+<tr><td><code>OP_TRUE</code></td><td><code>OP_1</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=84">script.h:84</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_2</code></td><td><code>0x52</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=85">script.h:85</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=491">línea 491</a></td></tr>
+<tr><td><code>OP_3</code></td><td><code>0x53</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=86">script.h:86</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=492">línea 492</a></td></tr>
+<tr><td><code>OP_4</code></td><td><code>0x54</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=87">script.h:87</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=493">línea 493</a></td></tr>
+<tr><td><code>OP_5</code></td><td><code>0x55</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=88">script.h:88</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=494">línea 494</a></td></tr>
+<tr><td><code>OP_6</code></td><td><code>0x56</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=89">script.h:89</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=495">línea 495</a></td></tr>
+<tr><td><code>OP_7</code></td><td><code>0x57</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=90">script.h:90</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=496">línea 496</a></td></tr>
+<tr><td><code>OP_8</code></td><td><code>0x58</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=91">script.h:91</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=497">línea 497</a></td></tr>
+<tr><td><code>OP_9</code></td><td><code>0x59</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=92">script.h:92</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=498">línea 498</a></td></tr>
+<tr><td><code>OP_10</code></td><td><code>0x5a</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=93">script.h:93</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=499">línea 499</a></td></tr>
+<tr><td><code>OP_11</code></td><td><code>0x5b</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=94">script.h:94</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=500">línea 500</a></td></tr>
+<tr><td><code>OP_12</code></td><td><code>0x5c</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=95">script.h:95</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=501">línea 501</a></td></tr>
+<tr><td><code>OP_13</code></td><td><code>0x5d</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=96">script.h:96</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=502">línea 502</a></td></tr>
+<tr><td><code>OP_14</code></td><td><code>0x5e</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=97">script.h:97</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=503">línea 503</a></td></tr>
+<tr><td><code>OP_15</code></td><td><code>0x5f</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=98">script.h:98</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=504">línea 504</a></td></tr>
+<tr><td><code>OP_16</code></td><td><code>0x60</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=99">script.h:99</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=505">línea 505</a></td></tr>
+<tr><td><code>OP_NOP</code></td><td><code>0x61</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=102">script.h:102</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=519">línea 519</a></td></tr>
+<tr><td><code>OP_VER</code></td><td><code>0x62</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=103">script.h:103</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_IF</code></td><td><code>0x63</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=104">script.h:104</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=603">línea 603</a></td></tr>
+<tr><td><code>OP_NOTIF</code></td><td><code>0x64</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=105">script.h:105</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=604">línea 604</a></td></tr>
+<tr><td><code>OP_VERIF</code></td><td><code>0x65</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=106">script.h:106</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_VERNOTIF</code></td><td><code>0x66</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=107">script.h:107</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_ELSE</code></td><td><code>0x67</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=108">script.h:108</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=637">línea 637</a></td></tr>
+<tr><td><code>OP_ENDIF</code></td><td><code>0x68</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=109">script.h:109</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=645">línea 645</a></td></tr>
+<tr><td><code>OP_VERIFY</code></td><td><code>0x69</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=110">script.h:110</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=653">línea 653</a></td></tr>
+<tr><td><code>OP_RETURN</code></td><td><code>0x6a</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=111">script.h:111</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=667">línea 667</a></td></tr>
+<tr><td><code>OP_TOALTSTACK</code></td><td><code>0x6b</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=114">script.h:114</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=677">línea 677</a></td></tr>
+<tr><td><code>OP_FROMALTSTACK</code></td><td><code>0x6c</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=115">script.h:115</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=686">línea 686</a></td></tr>
+<tr><td><code>OP_2DROP</code></td><td><code>0x6d</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=116">script.h:116</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=695">línea 695</a></td></tr>
+<tr><td><code>OP_2DUP</code></td><td><code>0x6e</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=117">script.h:117</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=705">línea 705</a></td></tr>
+<tr><td><code>OP_3DUP</code></td><td><code>0x6f</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=118">script.h:118</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=717">línea 717</a></td></tr>
+<tr><td><code>OP_2OVER</code></td><td><code>0x70</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=119">script.h:119</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=731">línea 731</a></td></tr>
+<tr><td><code>OP_2ROT</code></td><td><code>0x71</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=120">script.h:120</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=743">línea 743</a></td></tr>
+<tr><td><code>OP_2SWAP</code></td><td><code>0x72</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=121">script.h:121</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=756">línea 756</a></td></tr>
+<tr><td><code>OP_IFDUP</code></td><td><code>0x73</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=122">script.h:122</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=766">línea 766</a></td></tr>
+<tr><td><code>OP_DEPTH</code></td><td><code>0x74</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=123">script.h:123</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=777">línea 777</a></td></tr>
+<tr><td><code>OP_DROP</code></td><td><code>0x75</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=124">script.h:124</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=785">línea 785</a></td></tr>
+<tr><td><code>OP_DUP</code></td><td><code>0x76</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=125">script.h:125</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=794">línea 794</a></td></tr>
+<tr><td><code>OP_NIP</code></td><td><code>0x77</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=126">script.h:126</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=804">línea 804</a></td></tr>
+<tr><td><code>OP_OVER</code></td><td><code>0x78</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=127">script.h:127</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=813">línea 813</a></td></tr>
+<tr><td><code>OP_PICK</code></td><td><code>0x79</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=128">script.h:128</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=823">línea 823</a></td></tr>
+<tr><td><code>OP_ROLL</code></td><td><code>0x7a</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=129">script.h:129</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=824">línea 824</a></td></tr>
+<tr><td><code>OP_ROT</code></td><td><code>0x7b</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=130">script.h:130</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=841">línea 841</a></td></tr>
+<tr><td><code>OP_SWAP</code></td><td><code>0x7c</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=131">script.h:131</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=853">línea 853</a></td></tr>
+<tr><td><code>OP_TUCK</code></td><td><code>0x7d</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=132">script.h:132</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=862">línea 862</a></td></tr>
+<tr><td><code>OP_CAT</code></td><td><code>0x7e</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=135">script.h:135</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_SUBSTR</code></td><td><code>0x7f</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=136">script.h:136</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_LEFT</code></td><td><code>0x80</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=137">script.h:137</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_RIGHT</code></td><td><code>0x81</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=138">script.h:138</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_SIZE</code></td><td><code>0x82</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=139">script.h:139</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=873">línea 873</a></td></tr>
+<tr><td><code>OP_INVERT</code></td><td><code>0x83</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=142">script.h:142</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_AND</code></td><td><code>0x84</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=143">script.h:143</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_OR</code></td><td><code>0x85</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=144">script.h:144</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_XOR</code></td><td><code>0x86</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=145">script.h:145</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_EQUAL</code></td><td><code>0x87</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=146">script.h:146</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=887">línea 887</a></td></tr>
+<tr><td><code>OP_EQUALVERIFY</code></td><td><code>0x88</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=147">script.h:147</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=888">línea 888</a></td></tr>
+<tr><td><code>OP_RESERVED1</code></td><td><code>0x89</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=148">script.h:148</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_RESERVED2</code></td><td><code>0x8a</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=149">script.h:149</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_1ADD</code></td><td><code>0x8b</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=152">script.h:152</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=919">línea 919</a></td></tr>
+<tr><td><code>OP_1SUB</code></td><td><code>0x8c</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=153">script.h:153</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=920">línea 920</a></td></tr>
+<tr><td><code>OP_2MUL</code></td><td><code>0x8d</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=154">script.h:154</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_2DIV</code></td><td><code>0x8e</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=155">script.h:155</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_NEGATE</code></td><td><code>0x8f</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=156">script.h:156</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=921">línea 921</a></td></tr>
+<tr><td><code>OP_ABS</code></td><td><code>0x90</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=157">script.h:157</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=922">línea 922</a></td></tr>
+<tr><td><code>OP_NOT</code></td><td><code>0x91</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=158">script.h:158</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=923">línea 923</a></td></tr>
+<tr><td><code>OP_0NOTEQUAL</code></td><td><code>0x92</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=159">script.h:159</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=924">línea 924</a></td></tr>
+<tr><td><code>OP_ADD</code></td><td><code>0x93</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=161">script.h:161</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=945">línea 945</a></td></tr>
+<tr><td><code>OP_SUB</code></td><td><code>0x94</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=162">script.h:162</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=946">línea 946</a></td></tr>
+<tr><td><code>OP_MUL</code></td><td><code>0x95</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=163">script.h:163</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_DIV</code></td><td><code>0x96</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=164">script.h:164</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_MOD</code></td><td><code>0x97</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=165">script.h:165</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_LSHIFT</code></td><td><code>0x98</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=166">script.h:166</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_RSHIFT</code></td><td><code>0x99</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=167">script.h:167</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_BOOLAND</code></td><td><code>0x9a</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=169">script.h:169</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=947">línea 947</a></td></tr>
+<tr><td><code>OP_BOOLOR</code></td><td><code>0x9b</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=170">script.h:170</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=948">línea 948</a></td></tr>
+<tr><td><code>OP_NUMEQUAL</code></td><td><code>0x9c</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=171">script.h:171</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=949">línea 949</a></td></tr>
+<tr><td><code>OP_NUMEQUALVERIFY</code></td><td><code>0x9d</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=172">script.h:172</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=950">línea 950</a></td></tr>
+<tr><td><code>OP_NUMNOTEQUAL</code></td><td><code>0x9e</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=173">script.h:173</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=951">línea 951</a></td></tr>
+<tr><td><code>OP_LESSTHAN</code></td><td><code>0x9f</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=174">script.h:174</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=952">línea 952</a></td></tr>
+<tr><td><code>OP_GREATERTHAN</code></td><td><code>0xa0</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=175">script.h:175</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=953">línea 953</a></td></tr>
+<tr><td><code>OP_LESSTHANOREQUAL</code></td><td><code>0xa1</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=176">script.h:176</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=954">línea 954</a></td></tr>
+<tr><td><code>OP_GREATERTHANOREQUAL</code></td><td><code>0xa2</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=177">script.h:177</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=955">línea 955</a></td></tr>
+<tr><td><code>OP_MIN</code></td><td><code>0xa3</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=178">script.h:178</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=956">línea 956</a></td></tr>
+<tr><td><code>OP_MAX</code></td><td><code>0xa4</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=179">script.h:179</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=957">línea 957</a></td></tr>
+<tr><td><code>OP_WITHIN</code></td><td><code>0xa5</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=181">script.h:181</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1002">línea 1002</a></td></tr>
+<tr><td><code>OP_RIPEMD160</code></td><td><code>0xa6</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=184">script.h:184</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1022">línea 1022</a></td></tr>
+<tr><td><code>OP_SHA1</code></td><td><code>0xa7</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=185">script.h:185</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1023">línea 1023</a></td></tr>
+<tr><td><code>OP_SHA256</code></td><td><code>0xa8</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=186">script.h:186</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1024">línea 1024</a></td></tr>
+<tr><td><code>OP_HASH160</code></td><td><code>0xa9</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=187">script.h:187</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1025">línea 1025</a></td></tr>
+<tr><td><code>OP_HASH256</code></td><td><code>0xaa</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=188">script.h:188</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1026">línea 1026</a></td></tr>
+<tr><td><code>OP_CODESEPARATOR</code></td><td><code>0xab</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=189">script.h:189</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1048">línea 1048</a></td></tr>
+<tr><td><code>OP_CHECKSIG</code></td><td><code>0xac</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=190">script.h:190</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1059">línea 1059</a></td></tr>
+<tr><td><code>OP_CHECKSIGVERIFY</code></td><td><code>0xad</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=191">script.h:191</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1060">línea 1060</a></td></tr>
+<tr><td><code>OP_CHECKMULTISIG</code></td><td><code>0xae</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=192">script.h:192</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1105">línea 1105</a></td></tr>
+<tr><td><code>OP_CHECKMULTISIGVERIFY</code></td><td><code>0xaf</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=193">script.h:193</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1106">línea 1106</a></td></tr>
+<tr><td><code>OP_NOP1</code></td><td><code>0xb0</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=196">script.h:196</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=595">línea 595</a></td></tr>
+<tr><td><code>OP_CHECKLOCKTIMEVERIFY</code></td><td><code>0xb1</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=197">script.h:197</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=522">línea 522</a></td></tr>
+<tr><td><code>OP_NOP2</code></td><td><code>OP_CHECKLOCKTIMEVERIFY</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=198">script.h:198</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_CHECKSEQUENCEVERIFY</code></td><td><code>0xb2</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=199">script.h:199</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=561">línea 561</a></td></tr>
+<tr><td><code>OP_NOP3</code></td><td><code>OP_CHECKSEQUENCEVERIFY</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=200">script.h:200</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_NOP4</code></td><td><code>0xb3</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=201">script.h:201</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_NOP5</code></td><td><code>0xb4</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=202">script.h:202</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_NOP6</code></td><td><code>0xb5</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=203">script.h:203</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=596">línea 596</a></td></tr>
+<tr><td><code>OP_NOP7</code></td><td><code>0xb6</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=204">script.h:204</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_NOP8</code></td><td><code>0xb7</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=205">script.h:205</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_NOP9</code></td><td><code>0xb8</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=206">script.h:206</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_NOP10</code></td><td><code>0xb9</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=207">script.h:207</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+<tr><td><code>OP_CHECKSIGADD</code></td><td><code>0xba</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=210">script.h:210</a></td><td><a href="explorador.html#f=src/script/interpreter.cpp&amp;l=1084">línea 1084</a></td></tr>
+<tr><td><code>OP_INVALIDOPCODE</code></td><td><code>0xff</code></td><td><a href="explorador.html#f=src/script/script.h&amp;l=212">script.h:212</a></td><td><span class="muted">sin <code>case</code> propio</span></td></tr>
+</tbody></table></div></div>
+
+<div class="quiz" data-title="Test del nivel 4"><script type="application/json">[
+{"q":"Al terminar de ejecutar los scripts, ¿cuándo es válido el gasto?","o":["Si la pila está vacía","Si la cima de la pila es «verdadera» (y no hubo errores)","Si se ejecutaron todos los opcodes","Si hay una firma en la pila"],"a":1,"why":"VerifyScript: CastToBool(stack.back())."},
+{"q":"¿Por qué Script no tiene bucles?","o":["Por olvido","Para que todo programa termine y su coste sea predecible","Porque C++ no lo permite","Los tiene, ocultos"],"a":1,"why":"Evita ataques de denegación de servicio y hace el análisis sencillo."},
+{"q":"¿Qué arregló ejecutar scriptSig y scriptPubKey por separado?","o":["CVE-2010-5141: cualquiera podía gastar cualquier moneda","El bug de SIGHASH_SINGLE","La maleabilidad de SegWit","Nada"],"a":0,"why":"Antes se concatenaban y un scriptSig con OP_RETURN saltaba el candado."},
+{"q":"En P2WPKH, ¿qué script se ejecuta?","o":["Ninguno","Uno P2PKH clásico fabricado al vuelo con el programa de 20 bytes","El que diga el testigo","Un script Taproot"],"a":1,"why":"exec_script << OP_DUP << OP_HASH160 << program << OP_EQUALVERIFY << OP_CHECKSIG."},
+{"q":"¿Qué ocurre hoy con una salida de testigo versión 2?","o":["Es inválida","La puede gastar cualquiera (reservada para futuros soft forks); la política no la retransmite","Sólo la pueden gastar mineros","Equivale a Taproot"],"a":1,"why":"Versiones desconocidas devuelven true por compatibilidad futura."},
+{"q":"¿Qué novedad de BIP143 protege a carteras hardware?","o":["Firmar el valor de la moneda gastada","Firmas más cortas","Direcciones bech32","El anexo"],"a":0,"why":"ss << amount: la firma compromete el valor de la entrada."}
+]</script></div>
+
+    <nav class="prevnext"><a class="prev" href="nivel-3.html"><span>← Anterior</span>Nivel 3 · Transacciones</a><a class="next" href="nivel-5.html"><span>Siguiente →</span>Nivel 5 · Bloques, árbol de Merkle y prueba de trabajo</a></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+<script type="module" src="assets/diagrams.js"></script>
+</body>
+</html>

@@ -1,0 +1,178 @@
+<div class="kicker">Nivel 6 · El corazón</div>
+<h1>Validación: el corazón del consenso</h1>
+<p class="lead">Este es el nivel más importante para auditar. Aquí se decide, regla a regla, si un bloque entra en tu cadena. Todo vive en <src file="src/validation.cpp">src/validation.cpp</src> (unas 6400 líneas). Lo recorreremos en el orden en que lo atraviesa un bloque recién llegado.</p>
+
+<h2>El viaje de un bloque</h2>
+<pre class="mermaid">
+flowchart TD
+  P["net_processing.cpp<br/>recibe mensaje «block»"] --> PNB["ProcessNewBlock"]
+  PNB --> CB["CheckBlock<br/>(sin contexto: PoW, Merkle,<br/>tamaño, coinbase, CheckTransaction)"]
+  CB -->|ok| AB["AcceptBlock"]
+  AB --> ABH["AcceptBlockHeader<br/>ContextualCheckBlockHeader<br/>(dificultad, tiempo, versión)"]
+  ABH --> CCB["ContextualCheckBlock<br/>(tx finales, altura en coinbase,<br/>compromiso de testigos, peso)"]
+  CCB --> W["Escribir en blk*.dat"]
+  W --> ABC["ActivateBestChain"]
+  ABC --> FMW["FindMostWorkChain<br/>¿qué punta tiene más trabajo?"]
+  FMW --> ABCS["ActivateBestChainStep"]
+  ABCS -->|"si hace falta reorganizar"| DT["DisconnectTip → DisconnectBlock<br/>(deshace con rev*.dat)"]
+  ABCS --> CT["ConnectTip → ConnectBlock<br/>(entradas, scripts, comisiones,<br/>actualiza UTXO)"]
+  CT --> TIP(("Nueva punta<br/>de la cadena"))
+</pre>
+<div class="callout"><span class="t">Dos tipos de comprobaciones</span>
+<p><b>Sin contexto</b> (<code>CheckBlock</code>, <code>CheckTransaction</code>): mirando sólo el bloque. Son baratas y se hacen primero. <b>Con contexto</b> (<code>Contextual…</code>, <code>ConnectBlock</code>): necesitan saber qué hay antes en la cadena (dificultad esperada, monedas sin gastar…).</p></div>
+
+<h2>1. ProcessNewBlock: la puerta de entrada</h2>
+<code-ref file="src/validation.cpp" fn="ChainstateManager::ProcessNewBlock">
+  <n m="LOCK(cs_main);"><code>cs_main</code> es el gran candado del estado de la cadena: mientras se valida, ningún otro hilo puede tocarla.</n>
+  <n m="Skipping AcceptBlock() for CheckBlock() failures">Decisión de diseño sutil: si <code>CheckBlock</code> falla, el bloque NO se marca como inválido para siempre. ¿Por qué? Porque un atacante podría modificar un bloque válido (maleabilidad, como CVE-2012-2459) sin cambiar su hash; si lo marcáramos inválido, rechazaríamos también el bloque bueno con ese hash.</n>
+  <n m="bool ret = CheckBlock(*block, state, GetConsensus());">Comprobaciones baratas sin contexto.</n>
+  <n m="ret = AcceptBlock(">Si pasan: comprobaciones con contexto y guardar en disco.</n>
+  <n m="ActiveChainstate().ActivateBestChain(state, block)">Después (ya sin el candado), intentar que la cadena activa avance o se reorganice.</n>
+  <n m="HistoricalChainstate()">Si usas assumeutxo (nivel 7), hay una segunda cadena validándose en segundo plano desde el génesis.</n>
+</code-ref>
+
+<h2>2. CheckBlock: comprobaciones sin contexto</h2>
+<code-ref file="src/validation.cpp" fn="CheckBlockHeader">
+  <n m="CheckProofOfWork(block.GetHash(), block.nBits, consensusParams)">Lo primero: ¿el hash cumple el objetivo que el propio bloque declara? (Si el objetivo es el correcto se comprueba después, con contexto.) Es la comprobación más barata para descartar basura.</n>
+</code-ref>
+<code-ref file="src/validation.cpp" fn="CheckMerkleRoot">
+  <n m="BlockMerkleRoot(block, &mutated);">Recalcula la raíz de Merkle a partir de las transacciones recibidas.</n>
+  <n m="if (block.hashMerkleRoot != merkle_root)">Debe coincidir con la de la cabecera: si no, las transacciones no son las que el minero comprometió.</n>
+  <n m="if (mutated) {">La defensa contra CVE-2012-2459 del nivel 5.</n>
+</code-ref>
+<code-ref file="src/validation.cpp" fn="CheckBlock" title="el bloque completo, sin contexto">
+  <n m="if (block.fChecked)">Caché: si ya se comprobó, no repetir.</n>
+  <n m="CheckSignetBlockSolution">Sólo en signet (red de pruebas firmada).</n>
+  <n m="fCheckMerkleRoot && !CheckMerkleRoot(block, state)">Raíz de Merkle.</n>
+  <n m="All potential-corruption validation must be done before">Orden importante: primero lo que detecta corrupción/maleabilidad; luego lo que invalida de verdad.</n>
+  <n m="block.vtx.empty() || block.vtx.size() * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT">Tamaño: al menos una transacción y, sin contar testigos, no más del peso máximo.</n>
+  <n m="!block.vtx[0]->IsCoinBase()">La primera transacción debe ser la coinbase…</n>
+  <n m="if (block.vtx[i]->IsCoinBase())">…y sólo la primera.</n>
+  <n m="if (!CheckTransaction(*tx, tx_state)) {">Cada transacción pasa CheckTransaction (nivel 3): incluye la comprobación de entradas duplicadas de CVE-2018-17144.</n>
+  <n m="nSigOps += GetLegacySigOpCount(*tx);">Cuenta aproximada de operaciones de firma (las caras de verificar). Límite: 80 000 de «coste».</n>
+  <n m="block.fChecked = true;">Marca como comprobado.</n>
+</code-ref>
+
+<h2>3. AcceptBlockHeader: ¿encaja esta cabecera?</h2>
+<code-ref file="src/validation.cpp" fn="ChainstateManager::AcceptBlockHeader">
+  <n m="BlockMap::iterator miSelf{m_blockman.m_block_index.find(hash)};">¿Ya conocemos esta cabecera?</n>
+  <n m="if (pindex->nStatus & BLOCK_FAILED_VALID) {">Si ya sabemos que es inválida, se rechaza al instante.</n>
+  <n m="if (!CheckBlockHeader(block, state, GetConsensus())) {">Prueba de trabajo.</n>
+  <n m="return state.Invalid(BlockValidationResult::BLOCK_MISSING_PREV, &quot;prev-blk-not-found&quot;);">Debemos conocer el bloque anterior (las cabeceras se descargan en orden).</n>
+  <n m="return state.Invalid(BlockValidationResult::BLOCK_INVALID_PREV, &quot;bad-prevblk&quot;);">Si el padre es inválido, el hijo también.</n>
+  <n m="if (!ContextualCheckBlockHeader(">Reglas que dependen del padre (abajo).</n>
+  <n m="if (!min_pow_checked) {">Antidenegación de servicio: sólo se guardan cabeceras de cadenas que ya demostraron suficiente trabajo total (nivel 8, headerssync).</n>
+  <n m="m_blockman.AddToBlockIndex(block, m_best_header)">Se añade al índice de bloques en memoria (un <code>CBlockIndex</code>, nivel 7).</n>
+</code-ref>
+<code-ref file="src/validation.cpp" fn="ContextualCheckBlockHeader" title="reglas de cabecera con contexto">
+  <n m="if (block.nBits != GetNextWorkRequired(pindexPrev, &block, consensusParams))">La dificultad declarada debe ser <b>exactamente</b> la que toca según el ajuste del nivel 5. Sin esto, un minero declararía una dificultad facilísima.</n>
+  <n m="if (block.GetBlockTime() <= pindexPrev->GetMedianTimePast())">El tiempo debe ser mayor que la <b>mediana</b> de los 11 bloques anteriores (no del anterior: los relojes de los mineros no están sincronizados).</n>
+  <n m="if (consensusParams.enforce_BIP94) {">Regla anti-timewarp: sólo en testnet4/regtest por ahora.</n>
+  <n m="if (block.Time() > NodeClock::now() + std::chrono::seconds{MAX_FUTURE_BLOCK_TIME}) {">No más de 2 horas en el futuro según tu reloj. Ojo: no es una regla de consenso «pura» (depende de tu reloj), por eso devuelve BLOCK_TIME_FUTURE y el bloque puede aceptarse más tarde.</n>
+  <n m="if ((block.nVersion < 2 && DeploymentActiveAfter(">Tras los soft forks BIP34/66/65, los bloques con versión antigua se rechazan.</n>
+</code-ref>
+
+<h2>4. ContextualCheckBlock y AcceptBlock</h2>
+<code-ref file="src/validation.cpp" fn="ContextualCheckBlock" title="reglas del bloque con contexto">
+  <n m="Enforce BIP113 (Median Time Past).">Los bloqueos de tiempo se comparan con la mediana de tiempo pasado (BIP113), no con el tiempo del bloque, para que los mineros no puedan adelantarlo.</n>
+  <n m="if (!IsFinalTx(*tx, nHeight, nLockTimeCutoff)) {">Todas las transacciones deben ser «finales» (nLockTime cumplido).</n>
+  <n m="CScript expect = CScript() << nHeight;">BIP34: la coinbase debe empezar por la altura del bloque. Así dos coinbases nunca son idénticas (y no tienen el mismo txid).</n>
+  <n m="CheckWitnessMalleation(">SegWit: la coinbase contiene un compromiso (en una salida OP_RETURN que empieza por <code>aa21a9ed</code>) con la raíz de Merkle de los wtxid. Así los testigos también quedan sellados por la prueba de trabajo.</n>
+  <n m="if (GetBlockWeight(block) > MAX_BLOCK_WEIGHT) {">Peso total ≤ 4 000 000 (se comprueba después del compromiso para no marcar inválido un bloque al que alguien añadió basura en el testigo de la coinbase).</n>
+</code-ref>
+<code-ref file="src/validation.cpp" fn="ChainstateManager::AcceptBlock" title="aceptar y guardar">
+  <n m="bool accepted_header{AcceptBlockHeader(">Primero la cabecera.</n>
+  <n m="if (fAlreadyHave) return true;">Si ya tenemos el bloque, nada que hacer.</n>
+  <n m="if (!fRequested) {">Antidenegación de servicio: los bloques que no pedimos sólo se procesan si tienen al menos tanto trabajo como nuestra punta, no están demasiado adelantados y superan el trabajo mínimo.</n>
+  <n m="!ContextualCheckBlock(block, state, *this, pindex->pprev)) {">Comprobaciones completas…</n>
+  <n m="ActiveChainstate().InvalidBlockFound(pindex, state);">…y si fallan (de forma no maleable), el bloque queda marcado como inválido para siempre.</n>
+  <n m="NewPoWValidBlock">Optimización de red: si encaja en nuestra punta, avisamos a los pares (compact blocks) antes incluso de validar las firmas.</n>
+  <n m="blockPos = m_blockman.WriteBlock(block, pindex->nHeight);">Se escribe en el archivo <code>blk?????.dat</code>.</n>
+  <n m="ReceivedBlockTransactions(block, pindex, blockPos);">Se anota que tenemos los datos y, si todos sus antepasados también, el bloque pasa a ser candidato a punta.</n>
+</code-ref>
+
+<h2>5. Elegir la mejor cadena</h2>
+<div class="callout bad"><span class="t">La regla de oro: más trabajo, no más larga</span><p>El nodo sigue la cadena válida con <b>más trabajo acumulado</b> (<code>nChainWork</code>, la suma de la dificultad esperada de cada bloque). Una cadena más larga pero de dificultad menor pierde. Así un atacante no puede «inventarse» una cadena larga con poca dificultad.</p></div>
+<code-ref file="src/validation.cpp" fn="Chainstate::FindMostWorkChain">
+  <n m="setBlockIndexCandidates.rbegin();">Los candidatos están ordenados por trabajo (y, a igualdad, por orden de llegada). Se coge el mejor.</n>
+  <n m="while (pindexTest && !m_chain.Contains(pindexTest)) {">Se recorre hacia atrás hasta enlazar con la cadena activa…</n>
+  <n m="bool fFailedChain = pindexTest->nStatus & BLOCK_FAILED_VALID;">…comprobando que ningún antepasado sea inválido…</n>
+  <n m="bool fMissingData = !(pindexTest->nStatus & BLOCK_HAVE_DATA);">…ni nos falten datos.</n>
+  <n m="setBlockIndexCandidates.erase(pindexFailed);">Si algo falla, toda esa rama deja de ser candidata y se prueba con la siguiente.</n>
+</code-ref>
+<code-ref file="src/validation.cpp" fn="Chainstate::ActivateBestChainStep" title="reorganizar si hace falta">
+  <n m="const CBlockIndex* pindexFork = m_chain.FindFork(pindexMostWork);">Punto común entre la cadena actual y la nueva.</n>
+  <n m="while (m_chain.Tip() && m_chain.Tip() != pindexFork) {">Desconecta bloques de la punta actual hasta llegar a ese punto (esto es una «reorganización»).</n>
+  <n m="FatalError(m_chainman.GetNotifications(), state, _(&quot;Failed to disconnect block.&quot;));">Si no puede deshacer un bloque, es un fallo del disco/sistema: el nodo se detiene antes que seguir en una cadena peor.</n>
+  <n m="int nTargetHeight = std::min(nHeight + 32, pindexMostWork->nHeight);">Conecta de 32 en 32 bloques para no retener el candado demasiado.</n>
+  <n m="if (!ConnectTip(">Conecta cada bloque nuevo.</n>
+  <n m="InvalidChainFound(vpindexToConnect.front());">Si uno es inválido, se marca toda esa rama.</n>
+</code-ref>
+<div class="game" data-game="chainsel"></div>
+
+<code-ref file="src/validation.cpp" fn="Chainstate::ConnectTip" title="conectar un bloque a la punta">
+  <n m="assert(pindexNew->pprev == m_chain.Tip());">Sólo se puede conectar encima de la punta actual.</n>
+  <n m="if (!m_blockman.ReadBlock(*pblockNew, *pindexNew)) {">Si no lo tenemos en memoria, se lee del disco.</n>
+  <n m="bool rv = ConnectBlock(*block_to_connect, state, pindexNew, view);">La validación completa (abajo), sobre una vista temporal del UTXO.</n>
+  <n m="view.Flush(">Sólo si todo fue bien, los cambios se aplican a la caché principal (todo o nada).</n>
+  <n m="m_mempool->removeForBlock(">Las transacciones confirmadas (y las que entran en conflicto con ellas) salen de la mempool.</n>
+  <n m="m_chain.SetTip(*pindexNew);">¡Nueva punta!</n>
+</code-ref>
+
+<h2>6. ConnectBlock: la validación completa</h2>
+<p>Esta función (unas 360 líneas) es donde se comprueba que cada moneda existe, que cada firma es correcta y que nadie crea dinero. La vemos por partes.</p>
+<h3>6a. AssumeValid: ¿hay que verificar las firmas?</h3>
+<code-ref file="src/validation.cpp" start="const char* script_check_reason;" end="script_check_reason = nullptr;">
+  <n m="if (m_chainman.AssumedValidBlock().IsNull()) {">Con <code>-assumevalid=0</code> se verifica TODO, siempre. Es la opción para auditores máximos.</n>
+  <n m="A suitable default value is included with the software">El código trae un hash de bloque «asumido válido» (<code>defaultAssumeValid</code> en chainparams). Las firmas de los bloques anteriores a él <b>no se verifican</b> para acelerar la descarga inicial…</n>
+  <n m="it->second.GetAncestor(pindex->nHeight) != pindex">…pero sólo si el bloque es antepasado de ese hash, si está en la cadena de cabeceras con más trabajo, si esa cadena supera <code>nMinimumChainWork</code> y si quedan al menos dos semanas de trabajo encima.</n>
+  <n m="Script verification is skipped when connecting blocks under the">Ojo: TODO lo demás se sigue comprobando (Merkle, montos, doble gasto, UTXO). Sólo se omiten los scripts. Y el valor por defecto es público y revisable en cada versión: si no te fías, usa <code>-assumevalid=0</code>.</n>
+</code-ref>
+<h3>6b. BIP30: transacciones duplicadas</h3>
+<code-ref file="src/validation.cpp" start="if (fEnforceBIP30 || pindex->nHeight >= BIP34_IMPLIES_BIP30_LIMIT) {" end="&quot;tried to overwrite transaction&quot;);">
+  <n m="if (view.HaveCoin(COutPoint(tx->GetHash(), o))) {">Un bloque no puede crear una salida con un txid:índice que ya exista sin gastar. En 2010 hubo dos coinbases idénticas (bloques 91 842 y 91 880) que «pisaron» otras, y esas monedas se perdieron. BIP34 (altura en la coinbase) lo hace casi imposible hoy.</n>
+</code-ref>
+<h3>6c. El bucle de transacciones</h3>
+<code-ref file="src/validation.cpp" start="std::vector<int> prevheights;" end="UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);">
+  <n m="for (unsigned int i = 0; i < block.vtx.size(); i++)">Se recorren las transacciones en orden. El orden importa: una transacción puede gastar una salida creada por otra anterior del mismo bloque.</n>
+  <n m="if (!Consensus::CheckTxInputs(tx, tx_state, view, pindex->nHeight, txfee)) {">¿Existen las monedas, están maduras y cuadran las cuentas? (nivel 3). Aquí se impide el <b>doble gasto</b>: una moneda gastada ya no está en <code>view</code>.</n>
+  <n m="nFees += txfee;">Se suman las comisiones…</n>
+  <n m="if (!MoneyRange(nFees)) {">…vigilando desbordamientos.</n>
+  <n m="if (!SequenceLocks(tx, nLockTimeFlags, prevheights, *pindex)) {">Bloqueos relativos (BIP68): necesitan saber a qué altura se confirmó cada moneda gastada.</n>
+  <n m="nSigOpsCost += GetTransactionSigOpCost(tx, view, flags);">Coste total de operaciones de firma del bloque ≤ 80 000.</n>
+  <n m="if (!tx.IsCoinBase() && fScriptChecks)">Verificación de scripts (firmas), salvo con assumevalid.</n>
+  <n m="tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache, &vChecks);">Las comprobaciones se añaden a una cola (<code>CCheckQueue</code>) y se ejecutan en paralelo en varios hilos: es lo más costoso de todo.</n>
+  <n m="UpdateCoins(tx, view,">Aplica la transacción al UTXO: borra las monedas gastadas (guardándolas en los datos de deshacer) y añade las nuevas.</n>
+</code-ref>
+<h3>6d. El final: recompensa, firmas y deshacer</h3>
+<code-ref file="src/validation.cpp" start="CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, params.GetConsensus());" end="view.SetBestBlock(pindex->GetBlockHash());">
+  <n m="if (block.vtx[0]->GetValueOut() > blockReward && state.IsValid()) {">La coinbase no puede pagar más que subsidio + comisiones.</n>
+  <n m="auto parallel_result = control->Complete();">Espera a que terminen todos los hilos de verificación de firmas. Si alguna falló, el bloque es inválido.</n>
+  <n m="if (fJustCheck) {">Modo «sólo comprobar» (para plantillas de minería): aquí termina.</n>
+  <n m="if (!m_blockman.WriteBlockUndo(blockundo, state, *pindex)) {">Escribe los datos de deshacer en <code>rev?????.dat</code>: las monedas que gastó este bloque, para poder revertirlo en una reorganización.</n>
+  <n m="pindex->RaiseValidity(BLOCK_VALID_SCRIPTS);">El bloque alcanza el máximo nivel de validez.</n>
+  <n m="view.SetBestBlock(pindex->GetBlockHash());">El UTXO ahora corresponde a este bloque.</n>
+</code-ref>
+
+<h2>7. Deshacer un bloque</h2>
+<code-ref file="src/validation.cpp" fn="Chainstate::DisconnectBlock">
+  <n m="if (!m_blockman.ReadBlockUndo(blockUndo, *pindex)) {">Lee los datos de deshacer del bloque.</n>
+  <n m="bool fEnforceBIP30 = !((pindex->nHeight==91722">Las dos excepciones históricas de BIP30 (las coinbases duplicadas de 2010).</n>
+  <n m="for (int i = block.vtx.size() - 1; i >= 0; i--) {">Se deshacen las transacciones en orden <b>inverso</b>.</n>
+  <n m="bool is_spent = view.SpendCoin(out, &coin);">Se borran las salidas que creó el bloque, comprobando que coinciden exactamente.</n>
+  <n m="int res = ApplyTxInUndo(std::move(txundo.vprevout[j]), view, out);">Se restauran las monedas que había gastado.</n>
+  <n m="view.SetBestBlock(pindex->pprev->GetBlockHash());">El UTXO vuelve a corresponder al bloque anterior.</n>
+</code-ref>
+
+<h2>Todas las reglas de rechazo</h2>
+<p>Esta tabla se genera buscando cada <code>state.Invalid(…)</code> en los archivos de consenso. Es un buen índice para auditar: cada fila es una regla.</p>
+<div class="table-wrap tall"><auto-table kind="reject-reasons"/></div>
+
+<div class="quiz" data-title="Test del nivel 6"><script type="application/json">[
+{"q":"¿Qué cadena sigue un nodo?","o":["La más larga","La válida con más trabajo acumulado","La que diga la mayoría de pares","La primera que recibió"],"a":1,"why":"FindMostWorkChain ordena candidatos por nChainWork."},
+{"q":"¿Por qué un fallo en CheckBlock no marca el bloque como inválido para siempre?","o":["Por pereza","Porque podría ser una versión manipulada (maleable) de un bloque válido con el mismo hash","Porque CheckBlock nunca falla","Porque lo hace otra función"],"a":1,"why":"Comentario en ProcessNewBlock, relacionado con CVE-2012-2459."},
+{"q":"Con assumevalid activo, ¿qué se deja de comprobar en bloques antiguos?","o":["Todo","Sólo los scripts/firmas; montos, doble gasto y Merkle se siguen comprobando","La prueba de trabajo","Las comisiones"],"a":1,"why":"Sólo se salta la verificación de scripts, y con condiciones."},
+{"q":"¿Dónde se impide el doble gasto entre transacciones de distintos bloques?","o":["En la cartera","En CheckTxInputs dentro de ConnectBlock: la moneda gastada ya no está en el UTXO","En la red","En el minero"],"a":1,"why":"HaveInputs falla si la moneda no está en la vista."},
+{"q":"¿Para qué sirven los archivos rev*.dat?","o":["Para las revisiones del código","Para deshacer bloques en una reorganización","Para la cartera","Para logs"],"a":1,"why":"WriteBlockUndo/ReadBlockUndo."},
+{"q":"¿Qué exige BIP34?","o":["Firmas DER","Que la coinbase empiece con la altura del bloque","Bloques de 1 MB","SegWit"],"a":1,"why":"ContextualCheckBlock: bad-cb-height."}
+]</script></div>

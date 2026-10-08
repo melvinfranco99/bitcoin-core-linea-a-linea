@@ -1,0 +1,138 @@
+<div class="kicker">Nivel 5 · La cadena</div>
+<h1>Bloques, árbol de Merkle y prueba de trabajo</h1>
+<p class="lead">Un bloque es un paquete de transacciones con una cabecera de 80 bytes que lo encadena al anterior. Para que sea válido, alguien tiene que haber gastado electricidad real buscando un número (el <i>nonce</i>) que haga que su hash sea menor que un objetivo. Aquí verás todo eso en el código, reconstruirás el bloque génesis y minarás tu propio bloque.</p>
+
+<h2>Anatomía de un bloque</h2>
+<pre class="mermaid">
+flowchart LR
+  subgraph B1["Bloque N-1"]
+    H1["Cabecera 80 B"]
+  end
+  subgraph B2["Bloque N"]
+    H2["versión · hashPrevBlock · hashMerkleRoot<br/>nTime · nBits · nNonce"] --> T2["Transacciones<br/>[coinbase, tx1, tx2, …]"]
+  end
+  subgraph B3["Bloque N+1"]
+    H3["Cabecera 80 B"]
+  end
+  H1 -- "SHA256d(cabecera)" --> H2
+  H2 -- "SHA256d(cabecera)" --> H3
+</pre>
+<p>Cada cabecera contiene el hash de la anterior. Cambiar una transacción antigua cambiaría la raíz de Merkle de su bloque, por tanto su hash, por tanto la cabecera siguiente… y habría que rehacer la prueba de trabajo de <b>todos</b> los bloques posteriores.</p>
+<code-ref file="src/primitives/block.h" start="class CBlockHeader" end="class CBlock : public CBlockHeader" title="la cabecera">
+  <n m="int32_t nVersion;">Versión. Hoy sus bits se usan para que los mineros señalen soft forks (nivel 10).</n>
+  <n m="uint256 hashPrevBlock;">El hash del bloque anterior: el «eslabón» de la cadena.</n>
+  <n m="uint256 hashMerkleRoot;">Un único hash que resume todas las transacciones del bloque (ver más abajo).</n>
+  <n m="uint32_t nTime;">Marca de tiempo (segundos desde 1970). Tiene reglas: mayor que la mediana de los 11 anteriores y no más de 2 horas en el futuro.</n>
+  <n m="uint32_t nBits;">El objetivo de dificultad en formato compacto.</n>
+  <n m="uint32_t nNonce;">El número que los mineros van cambiando para buscar un hash válido.</n>
+  <n m="return (nBits == 0);">Una cabecera «nula» se reconoce por nBits = 0.</n>
+</code-ref>
+<code-ref file="src/primitives/block.cpp" fn="CBlockHeader::GetHash" title="el hash del bloque">
+  <n m="HashWriter{} << *this">Serializa los 80 bytes de la cabecera y calcula su doble SHA-256. Fíjate: ¡las transacciones no se hashean aquí! Sólo la raíz de Merkle que las resume.</n>
+</code-ref>
+
+<h2>El árbol de Merkle</h2>
+<p>Para resumir miles de transacciones en 32 bytes se hashean por parejas, luego las parejas de parejas… hasta llegar a uno solo, la raíz. Ventaja: puedes demostrar que una transacción está en un bloque enseñando sólo unos pocos hashes (el «camino»), no el bloque entero.</p>
+<code-ref file="src/consensus/merkle.cpp" lines="9-63" title="ComputeMerkleRoot y su advertencia">
+  <n m="WARNING! If you're reading this">Los propios desarrolladores avisan: este árbol tiene un defecto de diseño de 2009 (CVE-2012-2459). No se puede cambiar sin un hard fork, así que se defiende.</n>
+  <n m="for transaction lists [1,2,3,4,5,6] and [1,2,3,4,5,6,5,6]">Al duplicar el último elemento cuando el nivel es impar, dos listas distintas de transacciones dan la misma raíz.</n>
+  <n m="We defend against this by detecting">La defensa: detectar dos hashes idénticos que se van a combinar y tratarlo como un bloque «mutado» (que no es lo mismo que inválido: el bloque bueno con ese hash sigue pudiendo llegar).</n>
+  <n m="while (hashes.size() > 1) {">Mientras quede más de un hash, sube un nivel.</n>
+  <n m="if (hashes[pos] == hashes[pos + 1]) mutation = true;">Detección de la mutación.</n>
+  <n m="hashes.push_back(hashes.back());">Si hay un número impar, duplica el último.</n>
+  <n m="SHA256D64(">Hashea todas las parejas de 64 bytes de una vez (con aceleración por hardware si la hay), escribiendo el resultado en la mitad inicial del mismo vector.</n>
+  <n m="hashes.resize(hashes.size() / 2);">El nivel siguiente tiene la mitad de elementos.</n>
+</code-ref>
+<div class="game" data-game="merkle"></div>
+
+<h2>Prueba de trabajo</h2>
+<div class="analogy">Imagina una lotería en la que, para ganar, tienes que tirar 64 dados de 16 caras y que salgan al menos 19 ceros seguidos al principio. No hay trucos: sólo puedes tirar muchas veces. Quien enseña una tirada ganadora demuestra que, en promedio, tiró muchísimas veces. Y comprobarlo cuesta una sola mirada.</div>
+<p>El hash de la cabecera, interpretado como número de 256 bits, debe ser <b>menor o igual que el objetivo</b> (target). Cuanto menor el objetivo, más difícil.</p>
+<code-ref file="src/pow.cpp" start="std::optional<arith_uint256> DeriveTarget" end="return true;" title="comprobar la prueba de trabajo">
+  <n m="bnTarget.SetCompact(nBits, &fNegative, &fOverflow);">Convierte los 4 bytes de nBits en el objetivo de 256 bits.</n>
+  <n m="if (fNegative || bnTarget == 0 || fOverflow || bnTarget > UintToArith256(pow_limit))">Rechaza objetivos absurdos: negativos, cero, desbordados o más fáciles que el mínimo permitido (<code>powLimit</code>).</n>
+  <n m="if (UintToArith256(hash) > bnTarget)">LA regla: si el hash es mayor que el objetivo, no hay prueba de trabajo. Es una comparación de números; toda la seguridad de la minería se resume en esta línea.</n>
+</code-ref>
+
+<h3>El formato compacto nBits</h3>
+<p>Un objetivo de 256 bits se guarda en 32 bits como en notación científica: 1 byte de «exponente» (cuántos bytes mide) y 3 de «mantisa». Por ejemplo <code>0x1d00ffff</code> = <code>0x00ffff</code> × 256<sup>(0x1d − 3)</sup> = <code>00000000ffff0000…</code>.</p>
+<code-ref file="src/arith_uint256.cpp" fn="arith_uint256::SetCompact" title="de nBits a objetivo">
+  <n m="int nSize = nCompact >> 24;">El byte alto es el tamaño en bytes.</n>
+  <n m="uint32_t nWord = nCompact & 0x007fffff;">Los 23 bits bajos son la mantisa (el bit 0x00800000 sería el signo, heredado de OpenSSL).</n>
+  <n m="*this <<= 8 * (nSize - 3);">Desplaza la mantisa a su posición.</n>
+  <n m="*pfNegative">Marca si tiene signo negativo (inválido).</n>
+  <n m="*pfOverflow">Marca si no cabe en 256 bits (inválido).</n>
+</code-ref>
+
+<h3>Ajuste de dificultad cada 2016 bloques</h3>
+<p>El objetivo es un bloque cada 10 minutos. Cada 2016 bloques (≈ 2 semanas) se mira cuánto se tardó de verdad y se corrige la dificultad proporcionalmente.</p>
+<code-ref file="src/pow.cpp" fn="GetNextWorkRequired" title="¿toca ajustar?">
+  <n m="% params.DifficultyAdjustmentInterval() != 0">Si el nuevo bloque no empieza un período de 2016 (= 2 semanas / 10 min), la dificultad no cambia…</n>
+  <n m="if (params.fPowAllowMinDifficultyBlocks)">…salvo en testnet, donde hay una regla especial de dificultad mínima (en mainnet esta rama nunca se ejecuta).</n>
+  <n m="return pindexLast->nBits;">Se mantiene el nBits del bloque anterior.</n>
+  <n m="int nHeightFirst = pindexLast->nHeight - (params.DifficultyAdjustmentInterval()-1);">Busca el primer bloque del período que acaba.</n>
+  <n m="return CalculateNextWorkRequired(pindexLast, pindexFirst->GetBlockTime(), params);">Y calcula la nueva dificultad con el tiempo transcurrido.</n>
+</code-ref>
+<code-ref file="src/pow.cpp" fn="CalculateNextWorkRequired" title="el cálculo">
+  <n m="int64_t nActualTimespan = pindexLast->GetBlockTime() - nFirstBlockTime;">Tiempo real del período. (Detalle histórico: mide entre el primer y el último bloque, 2015 intervalos y no 2016: el famoso error «off-by-one» de Satoshi, inofensivo en la práctica.)</n>
+  <n m="if (nActualTimespan < params.nPowTargetTimespan/4)">Límite: la dificultad no puede subir más de ×4 en un ajuste…</n>
+  <n m="if (nActualTimespan > params.nPowTargetTimespan*4)">…ni bajar más de ÷4.</n>
+  <n m="if (params.enforce_BIP94) {">Regla sólo de testnet4 (BIP94) contra el ataque «timewarp».</n>
+  <n m="bnNew *= nActualTimespan;">Nuevo objetivo = objetivo anterior × tiempo real / tiempo deseado. Si se tardó la mitad, el objetivo se reduce a la mitad (el doble de difícil).</n>
+  <n m="if (bnNew > bnPowLimit)">Nunca más fácil que powLimit.</n>
+  <n m="return bnNew.GetCompact();">De vuelta a formato compacto.</n>
+</code-ref>
+<div class="game" data-game="difficulty"></div>
+<div class="game" data-game="miner"></div>
+
+<h2>La recompensa y los 21 millones</h2>
+<p>La primera transacción de cada bloque (coinbase) crea monedas nuevas. ¿Cuántas? Lo dice esta función de 10 líneas. <b>Aquí, y no en ningún otro sitio, está la política monetaria de Bitcoin.</b></p>
+<code-ref file="src/validation.cpp" fn="GetBlockSubsidy" title="la emisión monetaria">
+  <n m="int halvings = nHeight / consensusParams.nSubsidyHalvingInterval;">¿Cuántos halvings han pasado? nSubsidyHalvingInterval = 210 000 bloques (≈ 4 años).</n>
+  <n m="if (halvings >= 64)">Protección técnica: desplazar un número de 64 bits 64 posiciones o más es «comportamiento indefinido» en C++. Este arreglo (BIP42, 2014) evitó que dentro de ~250 años la recompensa volviera a ser 50 BTC.</n>
+  <n m="CAmount nSubsidy = 50 * COIN;">Se empieza en 50 BTC…</n>
+  <n m="nSubsidy >>= halvings;">…y se divide por 2 una vez por halving (desplazar bits a la derecha = dividir por 2 redondeando hacia abajo).</n>
+</code-ref>
+<p>Y en <code>ConnectBlock</code> se comprueba que el minero no se paga de más:</p>
+<code-ref file="src/validation.cpp" start="CAmount blockReward = nFees + GetBlockSubsidy" end="coinbase pays too much">
+  <n m="CAmount blockReward = nFees + GetBlockSubsidy">Lo máximo que puede cobrar el minero: subsidio + suma de comisiones de las transacciones del bloque.</n>
+  <n m="if (block.vtx[0]->GetValueOut() > blockReward">Si la coinbase paga más, el bloque es inválido. Puede pagar menos (y esas monedas se pierden para siempre: ha pasado).</n>
+</code-ref>
+<div class="game" data-game="supply"></div>
+
+<h2>El bloque génesis</h2>
+<p>El primer bloque no tiene anterior: está escrito directamente en el código. Y el código <b>se comprueba a sí mismo</b> con <code>assert</code>: si alguien cambiara un byte, el programa se negaría a arrancar.</p>
+<code-ref file="src/kernel/chainparams.cpp" fn="CreateGenesisBlock" title="cómo se fabrica el génesis">
+  <n m="txNew.version = 1;">Una transacción versión 1…</n>
+  <n m="txNew.vin[0].scriptSig = CScript() << 486604799 << CScriptNum(4)">…cuyo scriptSig contiene 486604799 (= 0x1d00ffff, los nBits), el número 4 y el titular de The Times del 3 de enero de 2009: prueba de que el bloque no se creó antes de esa fecha.</n>
+  <n m="txNew.vout[0].nValue = genesisReward;">50 BTC…</n>
+  <n m="txNew.vout[0].scriptPubKey = genesisOutputScript;">…a una clave pública (estilo P2PK). Estas monedas nunca se pueden gastar: el génesis no se añadió a la base de datos de monedas.</n>
+  <n m="genesis.hashPrevBlock.SetNull();">Sin bloque anterior.</n>
+  <n m="genesis.hashMerkleRoot = BlockMerkleRoot(genesis);">Raíz de Merkle de una sola transacción = su propio txid.</n>
+</code-ref>
+<code-ref file="src/kernel/chainparams.cpp" start="genesis = CreateGenesisBlock(1231006505" end="assert(genesis.hashMerkleRoot ==" title="las comprobaciones">
+  <n m="CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff, 1, 50 * COIN);">Tiempo 1231006505 (3-ene-2009 18:15:05 UTC), nonce 2083236893, nBits 0x1d00ffff, versión 1, 50 BTC.</n>
+  <n m="assert(consensus.hashGenesisBlock ==">El hash debe ser exactamente este. Compruébalo tú mismo abajo.</n>
+</code-ref>
+<div class="game" data-game="genesis"></div>
+
+<h2>Parámetros de la red principal</h2>
+<code-ref file="src/kernel/chainparams.cpp" start="consensus.nSubsidyHalvingInterval = 210000;" end="consensus.fPowNoRetargeting = false;" title="mainnet">
+  <n m="nSubsidyHalvingInterval = 210000;">Halving cada 210 000 bloques.</n>
+  <n m="BIP16 exception">Excepciones históricas: un par de bloques concretos que se validan con reglas especiales porque se minaron justo durante transiciones.</n>
+  <n m="consensus.BIP34Height = 227931;">Alturas a partir de las cuales se aplican soft forks antiguos (ya «enterrados»: se activan por altura fija, nivel 10).</n>
+  <n m="consensus.SegwitHeight = 481824;">SegWit: activo desde el bloque 481 824 (agosto de 2017).</n>
+  <n m="consensus.powLimit">El objetivo más fácil permitido (dificultad 1).</n>
+  <n m="nPowTargetTimespan = 14 * 24 * 60 * 60;">2 semanas…</n>
+  <n m="nPowTargetSpacing = 10 * 60;">…entre bloques de 10 minutos → 2016 bloques por período.</n>
+  <n m="fPowAllowMinDifficultyBlocks = false;">En mainnet no hay atajos de dificultad.</n>
+</code-ref>
+
+<div class="quiz" data-title="Test del nivel 5"><script type="application/json">[
+{"q":"¿Cuántos bytes tiene una cabecera de bloque?","o":["32","80","1 MB","Depende del bloque"],"a":1,"why":"4+32+32+4+4+4 = 80."},
+{"q":"¿Cuándo es válida la prueba de trabajo?","o":["Cuando el hash empieza por 0","Cuando el hash (como número) es ≤ al objetivo derivado de nBits","Cuando el nonce es par","Cuando lo dicen los mineros"],"a":1,"why":"CheckProofOfWorkImpl: UintToArith256(hash) > bnTarget → falso."},
+{"q":"Si un período de 2016 bloques tarda 1 semana, ¿qué pasa?","o":["La dificultad se reduce a la mitad","La dificultad se duplica (el objetivo se divide por 2)","No cambia","Se detiene la red"],"a":1,"why":"bnNew = viejo × 1 semana / 2 semanas."},
+{"q":"¿Cuál es la recompensa en el halving número 4 (bloques 840 000–1 049 999)?","o":["6,25 BTC","3,125 BTC","1,5625 BTC","12,5 BTC"],"a":1,"why":"50 >> 4 = 3,125 BTC."},
+{"q":"¿Qué hace el código si una lista de transacciones duplica las dos últimas y da la misma raíz de Merkle?","o":["La acepta","Lo detecta como bloque mutado (bad-txns-duplicate)","Se bloquea","Cambia la raíz"],"a":1,"why":"ComputeMerkleRoot marca mutation y CheckMerkleRoot rechaza."},
+{"q":"¿Dónde se define la política monetaria de Bitcoin?","o":["En un documento de la fundación","En GetBlockSubsidy (validation.cpp) y la comprobación bad-cb-amount de ConnectBlock","En los exchanges","En la cartera"],"a":1,"why":"Unas pocas líneas que cualquiera puede leer y que todos los nodos aplican."}
+]</script></div>

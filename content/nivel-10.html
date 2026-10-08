@@ -1,0 +1,91 @@
+<div class="kicker">Nivel 10 · Evolución</div>
+<h1>Cómo cambian las reglas: soft forks y despliegues</h1>
+<p class="lead">Bitcoin ha añadido funciones (P2SH, bloqueos de tiempo, SegWit, Taproot) sin obligar a nadie a actualizar a la vez. El truco es el <b>soft fork</b>: hacer las reglas <i>más estrictas</i>, nunca más laxas. Este nivel te enseña a reconocer en el código cada cambio de reglas, que es justo lo que más importa vigilar como auditor.</p>
+
+<h2>Soft fork frente a hard fork</h2>
+<div class="grid2">
+  <div class="card"><h4>Soft fork (más estricto)</h4><p>Lo que antes era válido puede pasar a ser inválido. Los bloques de los nodos nuevos siguen siendo válidos para los viejos. Ejemplo: SegWit hizo que las salidas <code>OP_0 &lt;20 bytes&gt;</code>, que antes «cualquiera podía gastar», exijan una firma.</p></div>
+  <div class="card"><h4>Hard fork (más laxo)</h4><p>Algo antes inválido pasa a ser válido (p. ej. bloques más grandes). Los nodos viejos rechazan los bloques nuevos y la red se parte. Bitcoin Core nunca ha desplegado uno intencionadamente.</p></div>
+</div>
+<div class="analogy">Un club dice «se admite a mayores de 18». Si el club nuevo dice «mayores de 21» (soft fork), todos los que entran al nuevo también cumplen la regla antigua. Si dijera «mayores de 16» (hard fork), el portero antiguo echaría a algunos.</div>
+<p>Por eso el código deja «huecos» preparados para el futuro: opcodes <code>OP_NOP1…10</code>, versiones de testigo 2–16, versiones de hoja Taproot y <code>OP_SUCCESSx</code>. Hoy significan «válido»; un soft fork puede darles reglas.</p>
+
+<h2>Historial de soft forks en el código</h2>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Cambio</th><th>BIP</th><th>Año</th><th>Cómo se activa hoy en el código</th></tr></thead>
+<tbody>
+<tr><td>P2SH</td><td>16</td><td>2012</td><td>Siempre activo (salvo un bloque histórico, <code>script_flag_exceptions</code>)</td></tr>
+<tr><td>Altura en coinbase</td><td>34</td><td>2013</td><td>Enterrado: <code>BIP34Height = 227931</code></td></tr>
+<tr><td>Firmas DER estrictas</td><td>66</td><td>2015</td><td>Enterrado: <code>BIP66Height = 363725</code></td></tr>
+<tr><td>CHECKLOCKTIMEVERIFY</td><td>65</td><td>2015</td><td>Enterrado: <code>BIP65Height = 388381</code></td></tr>
+<tr><td>CSV, bloqueos relativos, MTP</td><td>68/112/113</td><td>2016</td><td>Enterrado: <code>CSVHeight = 419328</code></td></tr>
+<tr><td>SegWit (+ NULLDUMMY)</td><td>141/143/147</td><td>2017</td><td>Enterrado: <code>SegwitHeight = 481824</code></td></tr>
+<tr><td>Taproot, Schnorr, Tapscript</td><td>340/341/342</td><td>2021</td><td>Siempre activo (salvo un bloque histórico); el despliegue BIP9 se conserva en chainparams</td></tr>
+</tbody></table></div>
+<div class="callout info"><span class="t">«Enterrado» (buried)</span><p>Cuando un soft fork lleva años activo, se sustituye su mecanismo de activación por una simple altura fija (BIP90). Es más sencillo y no cambia nada para la cadena real: el código es más fácil de auditar.</p></div>
+<code-ref file="src/consensus/params.h" start="enum BuriedDeployment : int16_t {" end="MAX_VERSION_BITS_DEPLOYMENTS" title="los dos tipos de despliegue">
+  <n m="DEPLOYMENT_HEIGHTINCB = std::numeric_limits<int16_t>::min(),">Despliegues enterrados: BIP34, CLTV, DERSIG, CSV, SegWit. Se activan por altura.</n>
+  <n m="DEPLOYMENT_TESTDUMMY,">Despliegues por señalización BIP9 (versionbits): uno de prueba…</n>
+  <n m="DEPLOYMENT_TAPROOT,">…y Taproot.</n>
+</code-ref>
+
+<h2>BIP9: los mineros señalizan</h2>
+<p>Para activar un soft fork nuevo, los mineros marcan un bit de <code>nVersion</code> en sus bloques. Si en un período de 2016 bloques al menos el 90 % (1815) lo marcan, queda «bloqueado» y se activa en el siguiente período (o a partir de <code>min_activation_height</code>, el mecanismo «Speedy Trial» usado con Taproot).</p>
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> DEFINED
+  DEFINED --> STARTED: mediana de tiempo ≥ inicio
+  STARTED --> LOCKED_IN: ≥ 1815 de 2016 señalizan
+  STARTED --> FAILED: mediana de tiempo ≥ timeout
+  LOCKED_IN --> ACTIVE: altura ≥ min_activation_height
+  ACTIVE --> [*]
+  FAILED --> [*]
+</pre>
+<code-ref file="src/versionbits.cpp" fn="AbstractThresholdConditionChecker::GetStateFor" title="la máquina de estados">
+  <n m="if (nTimeStart == Consensus::BIP9Deployment::ALWAYS_ACTIVE) {">Atajos para redes de prueba: siempre activo…</n>
+  <n m="if (nTimeStart == Consensus::BIP9Deployment::NEVER_ACTIVE) {">…o nunca.</n>
+  <n m="pindexPrev = pindexPrev->GetAncestor(pindexPrev->nHeight - ((pindexPrev->nHeight + 1) % nPeriod));">El estado sólo cambia en los límites de período: todos los bloques de un período comparten estado.</n>
+  <n m="while (!cache.contains(pindexPrev)) {">Retrocede período a período hasta encontrar uno cuyo estado ya conozca (caché).</n>
+  <n m="case ThresholdState::DEFINED: {">DEFINED → STARTED cuando la mediana de tiempo alcanza la fecha de inicio.</n>
+  <n m="if (Condition(pindexCount)) {">Cuenta los bloques del período que señalizan el bit.</n>
+  <n m="if (count >= nThreshold) {">Si se alcanza el umbral, LOCKED_IN…</n>
+  <n m="} else if (pindexPrev->GetMedianTimePast() >= nTimeTimeout) {">…si no, y se acabó el plazo, FAILED.</n>
+  <n m="if (pindexPrev->nHeight + 1 >= min_activation_height) {">LOCKED_IN → ACTIVE al llegar a la altura mínima.</n>
+  <n m="// Nothing happens, these are terminal states.">ACTIVE y FAILED son definitivos.</n>
+</code-ref>
+<div class="game" data-game="bip9"></div>
+<code-ref file="src/kernel/chainparams.cpp" start="// Deployment of Taproot (BIPs 340-342)" end="consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].period = 2016;" title="los parámetros reales de Taproot">
+  <n m="DEPLOYMENT_TAPROOT].bit = 2;">Bit 2 de nVersion.</n>
+  <n m="nStartTime = 1619222400;">Inicio: 24 de abril de 2021.</n>
+  <n m="nTimeout = 1628640000;">Fin: 11 de agosto de 2021 (tres meses: «Speedy Trial»).</n>
+  <n m="min_activation_height = 709632;">Aunque se bloqueó en junio de 2021, no se activó hasta el bloque 709 632 (noviembre de 2021), para dar tiempo a actualizar.</n>
+  <n m="threshold = 1815;">90 % de 2016.</n>
+</code-ref>
+
+<h2>Cómo afecta a la validación: banderas de script</h2>
+<p>Cada soft fork de Script se traduce en una <b>bandera</b> que el intérprete consulta (<code>if (flags &amp; SCRIPT_VERIFY_…)</code>). Esta función decide qué banderas aplicar a cada bloque según su altura:</p>
+<code-ref file="src/validation.cpp" fn="GetBlockScriptFlags">
+  <n m="script_verify_flags flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT};">P2SH, SegWit y Taproot se aplican a <b>todos</b> los bloques, incluso los anteriores a su activación. ¿Cómo es posible? Porque se comprobó que ningún bloque antiguo los viola…</n>
+  <n m="script_flag_exceptions.find(">…salvo dos bloques concretos, listados por hash en chainparams.cpp, que se validan con banderas especiales.</n>
+  <n m="SCRIPT_VERIFY_DERSIG;">Firmas DER estrictas desde BIP66.</n>
+  <n m="SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;">OP_CHECKLOCKTIMEVERIFY (antes OP_NOP2) desde BIP65.</n>
+  <n m="SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;">OP_CHECKSEQUENCEVERIFY (antes OP_NOP3) desde CSV.</n>
+  <n m="SCRIPT_VERIFY_NULLDUMMY;">El argumento extra de OP_CHECKMULTISIG debe estar vacío, desde SegWit.</n>
+</code-ref>
+<div class="callout"><span class="t">Banderas de consenso frente a banderas de política</span><p>En <code>src/policy/policy.h</code> verás <code>MANDATORY_SCRIPT_VERIFY_FLAGS</code> (consenso) y <code>STANDARD_SCRIPT_VERIFY_FLAGS</code> (consenso + extras de política como <code>LOW_S</code>, <code>CLEANSTACK</code>, <code>DISCOURAGE_UPGRADABLE_NOPS</code>). Las «DISCOURAGE» existen para que nadie use hoy los huecos reservados a futuros soft forks.</p></div>
+
+<h2>Cómo detectar un cambio de consenso entre versiones</h2>
+<p>Esta es la habilidad más valiosa de un auditor. Entre dos versiones, revisa con lupa los cambios en:</p>
+<pre class="shell">git diff v30.0..{{TAG}} --stat -- src/consensus src/script/interpreter.cpp \
+    src/validation.cpp src/pow.cpp src/primitives src/kernel/chainparams.cpp \
+    src/versionbits.cpp src/arith_uint256.cpp src/uint256.* src/serialize.h \
+    src/crypto src/secp256k1 src/hash.* src/pubkey.cpp src/chain.*</pre>
+<p>Y pregúntate en cada cambio: ¿puede hacer que mi nodo acepte un bloque que antes rechazaba (sería un hard fork) o rechace uno que antes aceptaba (soft fork o, peor, una división de la red)?</p>
+
+<div class="quiz" data-title="Test del nivel 10"><script type="application/json">[
+{"q":"¿Qué caracteriza a un soft fork?","o":["Hace las reglas más laxas","Hace las reglas más estrictas: los nodos viejos siguen aceptando los bloques nuevos","Requiere que todos actualicen a la vez","Cambia la prueba de trabajo"],"a":1,"why":"Lo nuevo válido es un subconjunto de lo viejo válido."},
+{"q":"¿Cuántos bloques de 2016 deben señalizar para que un despliegue BIP9 típico quede LOCKED_IN?","o":["1008","1815 (90 %)","1916 (95 %)","2016"],"a":1,"why":"threshold = 1815 en chainparams."},
+{"q":"¿Qué significa que SegWit esté «enterrado»?","o":["Que se eliminó","Que se activa por una altura fija en el código en lugar de por señalización","Que es secreto","Que sólo vale en testnet"],"a":1,"why":"SegwitHeight = 481824."},
+{"q":"¿Por qué existen OP_NOP y versiones de testigo sin significado?","o":["Son errores","Son huecos para que futuros soft forks les den reglas sin romper nodos antiguos","Para pruebas","Para mineros"],"a":1,"why":"Así nacieron CLTV (OP_NOP2), CSV (OP_NOP3) y Taproot (testigo v1)."},
+{"q":"¿Desde qué altura se aplican las reglas de Taproot según GetBlockScriptFlags?","o":["709632","Desde siempre, salvo un bloque de excepción","481824","Nunca"],"a":1,"why":"Se aplica a toda la historia porque ningún bloque anterior la viola (salvo la excepción listada)."}
+]</script></div>

@@ -1,0 +1,103 @@
+<div class="kicker">Nivel 1 · Fundamentos</div>
+<h1>Bytes, hashes y serialización</h1>
+<p class="lead">Todo en Bitcoin acaba siendo una secuencia de bytes que se pasa por una función hash. Si entiendes cómo se convierten los objetos en bytes (serialización) y qué hace SHA-256, entiendes la «materia prima» de todo lo demás.</p>
+
+<h2>Bytes y hexadecimal</h2>
+<p>Un <b>byte</b> son 8 bits: un número de 0 a 255. Para escribirlo usamos dos cifras <b>hexadecimales</b> (base 16: 0–9 y a–f): <code>00</code> = 0, <code>ff</code> = 255, <code>1d</code> = 29. Un hash de 32 bytes se escribe con 64 caracteres hex.</p>
+
+<h3>Little-endian: los números «al revés»</h3>
+<p>Un entero de 4 bytes como 1 se puede guardar como <code>00 00 00 01</code> (big-endian, como lo escribimos los humanos) o como <code>01 00 00 00</code> (little-endian: primero el byte menos significativo). <b>Bitcoin usa little-endian para casi todo</b> (versión, cantidades, tiempos…). Por eso el <code>nVersion = 1</code> del bloque génesis aparece en bytes como <code>01000000</code>.</p>
+<code-ref file="src/serialize.h" fn="ser_writedata32" title="escribir un entero de 32 bits">
+  <n m="htole32_internal">Convierte el número a little-endian («host to little-endian 32»). En un ordenador x86 o ARM normal no hace nada, porque ya son little-endian; en uno big-endian daría la vuelta a los bytes. Así el resultado es idéntico en cualquier máquina: esto es imprescindible para el consenso.</n>
+  <n m="s.write">Escribe los 4 bytes en el flujo de salida.</n>
+</code-ref>
+
+<div class="callout bad"><span class="t">La trampa de los hashes al revés</span>
+<p>Los hashes (<code>uint256</code>) se guardan como 32 bytes en el orden en que salen de SHA-256, pero <b>se muestran dados la vuelta</b>. Por eso el hash del génesis «empieza» por ceros (<code>000000000019d6…</code>) cuando lo ves en un explorador, aunque en memoria esos ceros están al final. Es una herencia de la primera versión de Satoshi que interpretaba el hash como un número little-endian.</p></div>
+<code-ref file="src/uint256.cpp" fn="GetHex" title="cómo se muestra un hash">
+  <n m="m_data_rev[WIDTH];">Prepara un búfer del mismo tamaño (32 bytes para uint256).</n>
+  <n m="m_data[WIDTH - 1 - i]">Copia los bytes en orden inverso: el último pasa a ser el primero.</n>
+  <n m="HexStr(m_data_rev)">Y lo convierte a texto hexadecimal. Esto es lo que ves en exploradores y en <code>bitcoin-cli</code>.</n>
+</code-ref>
+
+<div class="game" data-game="compactsize"></div>
+
+<h2>Serialización: convertir objetos en bytes</h2>
+<p>Para enviar una transacción por la red, guardarla en disco o calcular su hash, hay que convertirla en una secuencia exacta de bytes. Todos los nodos deben hacerlo <b>exactamente igual</b>: un byte distinto daría un hash distinto. Esto vive en <src file="src/serialize.h">src/serialize.h</src>.</p>
+
+<h3>CompactSize: cuántos elementos vienen</h3>
+<p>Antes de una lista (entradas, salidas, bytes de un script…) se escribe su longitud con un formato de tamaño variable: los números pequeños ocupan 1 byte y los grandes hasta 9.</p>
+<code-ref file="src/serialize.h" fn="WriteCompactSize" title="escribir una longitud">
+  <n m="if (nSize < 253)">Si cabe en un byte y es menor que 253, se escribe tal cual. El 99 % de los casos (por ejemplo «2 entradas»).</n>
+  <n m="ser_writedata8(os, 253);">Si cabe en 16 bits: un byte marcador <code>0xfd</code> (253) seguido de 2 bytes.</n>
+  <n m="ser_writedata8(os, 254);">Hasta 32 bits: marcador <code>0xfe</code> + 4 bytes.</n>
+  <n m="ser_writedata8(os, 255);">Si no, marcador <code>0xff</code> + 8 bytes.</n>
+</code-ref>
+<code-ref file="src/serialize.h" fn="ReadCompactSize" title="leer una longitud (con defensas)">
+  <n m="uint8_t chSize = ser_readdata8(is);">Lee el primer byte para saber qué formato viene.</n>
+  <n m="if (nSizeRet < 253)">¡Defensa! Si alguien usa el formato largo para un número que cabía en el corto, se rechaza («non-canonical»). Así cada número tiene <b>una única</b> codificación válida y nadie puede cambiar los bytes (y por tanto el hash) sin cambiar el significado. Este problema se llama <i>maleabilidad</i>.</n>
+  <n m="if (nSizeRet < 0x10000u)">Lo mismo para 32 bits…</n>
+  <n m="if (nSizeRet < 0x100000000ULL)">…y para 64 bits.</n>
+  <n m="range_check && nSizeRet > MAX_SIZE">Otra defensa: un atacante podría anunciar «vienen 4 000 millones de elementos» para que reservemos memoria y el nodo se caiga. <code>MAX_SIZE</code> = 32 MiB pone un tope.</n>
+</code-ref>
+
+<h3>Listas y objetos</h3>
+<p>Una lista (<code>std::vector</code>) se serializa como <b>CompactSize(longitud) + cada elemento</b>. Un objeto se serializa como la concatenación de sus campos. Las clases lo declaran con la macro <code>SERIALIZE_METHODS</code>; por ejemplo, una cabecera de bloque son sus 6 campos uno detrás de otro:</p>
+<code-ref file="src/primitives/block.h" start="SERIALIZE_METHODS(CBlockHeader" end="SERIALIZE_METHODS(CBlockHeader">
+  <n m="READWRITE">La misma línea sirve para escribir y para leer (<code>READWRITE</code>): versión (4 bytes), hash previo (32), raíz de Merkle (32), tiempo (4), nBits (4) y nonce (4). Total: exactamente 80 bytes.</n>
+</code-ref>
+
+<h2>Funciones hash: huellas digitales</h2>
+<p>Una función hash toma cualquier cantidad de datos y devuelve una «huella» de tamaño fijo. SHA-256 devuelve 32 bytes. Tiene tres propiedades que sostienen todo Bitcoin:</p>
+<div class="grid2">
+  <div class="card"><h4>1. Determinista</h4><p>La misma entrada da siempre la misma huella, en cualquier ordenador.</p></div>
+  <div class="card"><h4>2. Imposible de invertir</h4><p>Viendo la huella no puedes saber la entrada, ni fabricar una entrada con una huella elegida.</p></div>
+  <div class="card"><h4>3. Sin colisiones prácticas</h4><p>Nadie ha encontrado nunca dos entradas distintas con la misma huella SHA-256.</p></div>
+</div>
+<div class="game" data-game="hasher"></div>
+
+<h3>SHA-256 por dentro</h3>
+<p>No hace falta entender la matemática para auditar Bitcoin (SHA-256 es un estándar público del NIST), pero sí conviene ver que el código es pequeño y legible. SHA-256 procesa el mensaje en trozos de 64 bytes; cada trozo pasa por 64 «rondas» que mezclan 8 variables de 32 bits.</p>
+<code-ref file="src/crypto/sha256.cpp" start="uint32_t inline Ch(" end="h = t1 + t2;" title="las funciones de mezcla y una ronda">
+  <n m="inline Ch(">«Choose»: para cada bit, si x es 1 elige y; si es 0 elige z.</n>
+  <n m="inline Maj(">«Majority»: para cada bit, el valor que tengan al menos dos de los tres.</n>
+  <n m="inline Sigma0(">Rotaciones de bits combinadas con XOR. <code>x &gt;&gt; 2 | x &lt;&lt; 30</code> es «rotar 2 posiciones a la derecha».</n>
+  <n m="void inline Round(">Una ronda: calcula dos temporales y actualiza dos de las ocho variables. <code>Transform</code> llama a esta función 64 veces por bloque de 64 bytes, con las constantes <code>0x428a2f98</code>… del estándar.</n>
+</code-ref>
+<code-ref file="src/crypto/sha256.cpp" fn="Initialize" title="el estado inicial">
+  <n m="0x6a09e667ul">Estos 8 números son los primeros 32 bits de la parte fraccionaria de las raíces cuadradas de los 8 primeros primos (2, 3, 5…). Son públicos y fijos: nadie los eligió «a dedo» (son «números sin nada en la manga»).</n>
+</code-ref>
+<code-ref file="src/crypto/sha256.cpp" start="void CSHA256::Finalize" title="el relleno final">
+  <n m="pad[64] = {0x80}">El relleno empieza por un bit 1 (<code>0x80</code>) seguido de ceros…</n>
+  <n m="Write(pad, 1 + ((119 - (bytes % 64)) % 64));">…tantos como hagan falta para que, tras añadir 8 bytes de longitud, el total sea múltiplo de 64.</n>
+  <n m="Write(sizedesc, 8);">Se añade la longitud del mensaje en bits (big-endian).</n>
+  <n m="WriteBE32(hash, s[0]);">El resultado son las 8 variables de estado escritas en big-endian: 32 bytes.</n>
+</code-ref>
+<p class="small muted">En <src file="src/crypto/sha256.cpp" m="std::string SHA256AutoDetect">SHA256AutoDetect</src> el nodo detecta si tu procesador tiene instrucciones especiales (SSE4, AVX2, SHA-NI, ARM) y usa una versión acelerada. Todas deben dar el mismo resultado; las pruebas (<code>src/test/crypto_tests.cpp</code>) lo comprueban.</p>
+
+<h3>Los hashes que usa Bitcoin</h3>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Nombre</th><th>Qué es</th><th>Para qué se usa</th></tr></thead>
+<tbody>
+<tr><td><b>SHA256d</b> (<code>CHash256</code>, <code>Hash()</code>)</td><td>SHA-256 aplicado dos veces</td><td>ID de bloques y transacciones, árbol de Merkle, checksum de mensajes P2P</td></tr>
+<tr><td><b>HASH160</b> (<code>CHash160</code>)</td><td>RIPEMD-160(SHA-256(x)): 20 bytes</td><td>Direcciones antiguas y SegWit v0 (hash de la clave pública)</td></tr>
+<tr><td><b>Tagged hash</b> (<code>TaggedHash</code>)</td><td>SHA-256(SHA-256(etiqueta) ‖ SHA-256(etiqueta) ‖ datos)</td><td>Taproot y Schnorr (BIP340/341): cada uso tiene su «etiqueta» para que un hash de un contexto nunca sirva en otro</td></tr>
+<tr><td><b>SipHash</b></td><td>Hash rápido con clave secreta</td><td>Tablas internas resistentes a ataques, IDs cortos de compact blocks</td></tr>
+</tbody></table></div>
+<code-ref file="src/hash.h" start="class CHash256 {" title="doble SHA-256">
+  <n m="sha.Finalize(buf);">Primera pasada: SHA-256 de los datos.</n>
+  <n m="sha.Reset().Write(buf, CSHA256::OUTPUT_SIZE).Finalize(output.data());">Segunda pasada: SHA-256 del resultado anterior. ¿Por qué dos veces? Satoshi lo eligió probablemente para protegerse de ataques de «extensión de longitud» que afectan a SHA-256 simple.</n>
+  <n m="CHash256& Write(">Puedes ir añadiendo datos poco a poco; sólo se hashea al final.</n>
+</code-ref>
+<code-ref file="src/hash.cpp" fn="TaggedHash" title="hash etiquetado (BIP340)">
+  <n m="CSHA256().Write((const unsigned char*)tag.data()">Primero se hashea la etiqueta (p. ej. <code>"TapLeaf"</code> o <code>"BIP0340/challenge"</code>).</n>
+  <n m="writer << taghash << taghash;">Y se escribe dos veces al principio del hasher. Así, el hash de unos datos con la etiqueta «A» nunca coincidirá con el de los mismos datos con la etiqueta «B».</n>
+</code-ref>
+
+<div class="quiz" data-title="Test del nivel 1"><script type="application/json">[
+{"q":"¿Cómo se escribe en bytes el entero de 32 bits 1 en Bitcoin?","o":["00000001","01000000","1","ff000000"],"a":1,"why":"Little-endian: primero el byte menos significativo."},
+{"q":"¿Qué CompactSize corresponde al número 300?","o":["2c01","fd2c01","fe2c010000","012c"],"a":1,"why":"300 ≥ 253 y cabe en 16 bits: marcador 0xfd + 300 en little-endian (2c 01)."},
+{"q":"¿Por qué ReadCompactSize rechaza codificaciones «no canónicas»?","o":["Para ahorrar espacio","Para que cada valor tenga una única codificación y no se puedan alterar bytes (y hashes) sin cambiar el significado","Porque es más rápido","No las rechaza"],"a":1,"why":"Evita la maleabilidad: si dos codificaciones significaran lo mismo, un tercero podría cambiar el hash de una transacción."},
+{"q":"¿Qué es HASH160?","o":["SHA-256 dos veces","RIPEMD-160 de SHA-256","SHA-1","160 rondas de SHA-256"],"a":1,"why":"CHash160: primero SHA-256 y luego RIPEMD-160, resultado de 20 bytes."},
+{"q":"El hash del bloque génesis se ve como 000000000019d6…, pero en memoria esos ceros están…","o":["Al principio","Al final, porque los hashes se muestran dados la vuelta","No hay ceros","En otro archivo"],"a":1,"why":"uint256::GetHex invierte el orden de los bytes al mostrar."}
+]</script></div>

@@ -1,0 +1,92 @@
+<div class="kicker">Nivel 9 · Antes de confirmarse</div>
+<h1>Mempool, política y minería</h1>
+<p class="lead">Antes de entrar en un bloque, una transacción espera en la <b>mempool</b> («piscina de memoria») de cada nodo. Qué transacciones acepta y retransmite tu nodo lo decide la <b>política</b>: reglas locales, configurables y más estrictas que el consenso. Entender esta diferencia es esencial para auditar.</p>
+
+<h2>Consenso frente a política</h2>
+<div class="grid2">
+  <div class="card"><h4><span class="badge cons">Consenso</span></h4><p>Reglas que <b>todos</b> los nodos aplican a los bloques. Si tu nodo difiere, te separas de la red. Cambiarlas requiere un soft fork.</p></div>
+  <div class="card"><h4><span class="badge pol">Política</span></h4><p>Reglas que <b>tu</b> nodo aplica a transacciones sueltas antes de aceptarlas en su mempool o retransmitirlas. Si un minero mete en un bloque una transacción «no estándar» pero válida, tu nodo acepta el bloque igualmente.</p></div>
+</div>
+<div class="analogy">El consenso es la ley: lo que es legal o ilegal. La política es el reglamento interno de tu tienda: «no aceptamos billetes de 500». Un billete de 500 sigue siendo dinero legal aunque tu tienda no lo acepte.</div>
+<p class="small muted">Lo dice la propia documentación: <src file="doc/policy/README.md">doc/policy/README.md</src> — «Policy is <i>not</i> applied to transactions in blocks».</p>
+
+<h2>El camino de una transacción hasta la mempool</h2>
+<pre class="mermaid">
+flowchart TD
+  R["Llega por P2P (tx) o RPC (sendrawtransaction)"] --> ATMP["AcceptToMemoryPool"]
+  ATMP --> PC["PreChecks<br/>CheckTransaction · IsStandardTx · no es coinbase<br/>¿final? ¿conflictos? ¿existen las entradas?<br/>CheckTxInputs · entradas/testigos estándar"]
+  PC --> RBF["¿Reemplaza a otra? (RBF)<br/>¿TRUC (v3)? ¿límites de clúster?"]
+  RBF --> PS["PolicyScriptChecks<br/>(scripts con banderas ESTÁNDAR, más estrictas)"]
+  PS --> CS["ConsensusScriptChecks<br/>(scripts con banderas del próximo bloque)<br/>→ guarda en la caché de firmas"]
+  CS --> F["Finalize: entra en la mempool<br/>(y se expulsan las de menor comisión si está llena)"]
+  F --> RL["Se anuncia a los pares (inv)"]
+</pre>
+<code-ref file="src/validation.cpp" start="bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)" end="&quot;bad-witness-nonstandard&quot;);" title="PreChecks: el filtro principal">
+  <n m="if (!CheckTransaction(tx, state)) {">Primero, las mismas reglas de consenso sin contexto que en los bloques (nivel 3).</n>
+  <n m="if (tx.IsCoinBase())">Una coinbase sólo puede existir dentro de un bloque.</n>
+  <n m="!IsStandardTx(tx, m_pool.m_opts.max_datacarrier_bytes">Política: ¿es «estándar»? (abajo).</n>
+  <n m="CVE-2017-12842">Las transacciones de menos de 65 bytes sin testigo no se retransmiten: una de 64 bytes podría confundirse con un nodo interno del árbol de Merkle y engañar a carteras ligeras (SPV).</n>
+  <n m="return state.Invalid(TxValidationResult::TX_PREMATURE_SPEND, &quot;non-final&quot;);">Sólo transacciones que se puedan minar en el próximo bloque.</n>
+  <n m="&quot;txn-already-in-mempool&quot;">Ya la tenemos.</n>
+  <n m="// Check for conflicts with in-memory transactions">¿Gasta una moneda que ya gasta otra transacción de la mempool? Entonces es un intento de reemplazo (RBF).</n>
+  <n m="// do all inputs exist?">¿Existen las monedas (en el UTXO o creadas por transacciones de la mempool)? Si no, puede ser una «huérfana» cuyo padre aún no ha llegado.</n>
+  <n m="&quot;non-BIP68-final&quot;">Bloqueos relativos cumplidos.</n>
+  <n m="Consensus::CheckTxInputs(tx, state, m_view, m_active_chainstate.m_chain.Height() + 1, ws.m_base_fees)">Las cuentas cuadran (consenso).</n>
+  <n m="&quot;bad-txns-nonstandard-inputs&quot;">Política: las entradas gastan tipos de script estándar.</n>
+  <n m="&quot;bad-witness-nonstandard&quot;">Política: testigos de tamaño razonable.</n>
+</code-ref>
+
+<h2>¿Qué es una transacción «estándar»?</h2>
+<code-ref file="src/policy/policy.cpp" fn="IsStandardTx">
+  <n m="if (tx.version > TX_MAX_STANDARD_VERSION">Versiones 1, 2 o 3. Otras versiones están reservadas para futuros usos.</n>
+  <n m="if (sz > MAX_STANDARD_TX_WEIGHT) {">Máximo 400 000 de peso (100 kvB): una transacción enorme podría costar a la red más CPU que lo que paga.</n>
+  <n m="if (txin.scriptSig.size() > MAX_STANDARD_SCRIPTSIG_SIZE) {">scriptSig de hasta 1650 bytes (el comentario explica el cálculo: una multifirma P2SH 15-de-15).</n>
+  <n m="if (!txin.scriptSig.IsPushOnly()) {">El scriptSig sólo puede contener datos (evita maleabilidad).</n>
+  <n m="if (!::IsStandard(txout.scriptPubKey, whichType)) {">Cada salida debe ser de un tipo conocido (P2PKH, P2SH, P2WPKH, P2WSH, P2TR, OP_RETURN…). Las versiones futuras de testigo no se retransmiten: así un soft fork futuro no puede robar a nadie que las haya usado por error.</n>
+  <n m="if (whichType == TxoutType::NULL_DATA) {">Salidas OP_RETURN (datos): limitadas por <code>-datacarriersize</code>.</n>
+  <n m="GetDust(tx, dust_relay_fee).size() > MAX_DUST_OUTPUTS_PER_TX">Como mucho una salida de «polvo».</n>
+</code-ref>
+<code-ref file="src/policy/policy.cpp" fn="GetDustThreshold" title="¿qué es «polvo» (dust)?">
+  <n m="If you'd pay more in fees than the value of the output">Polvo = una salida tan pequeña que costaría más en comisiones gastarla que lo que vale. Llenaría el UTXO para siempre.</n>
+  <n m="546 satoshis at the default rate">Umbral típico: 546 sats para P2PKH…</n>
+  <n m="294 satoshis at the default rate">…y 294 sats para P2WPKH.</n>
+  <n m="return dustRelayFeeIn.GetFee(nSize);">Tamaño de la salida + tamaño de la entrada que la gastaría, multiplicado por la tasa <code>-dustrelayfee</code>.</n>
+</code-ref>
+
+<h3>Todas las constantes de política</h3>
+<p>Generado desde <code>src/policy/policy.h</code>. Casi todas se pueden cambiar con opciones de configuración.</p>
+<div class="table-wrap tall"><auto-table kind="policy-constants"/></div>
+
+<h2>Reemplazar transacciones (RBF)</h2>
+<p>Si tu transacción se queda atascada con poca comisión, puedes enviar otra que gaste las mismas monedas pagando más. Reglas principales (<src file="src/policy/rbf.cpp">policy/rbf.cpp</src>, <src file="doc/policy/mempool-replacements.md">doc/policy/mempool-replacements.md</src>):</p>
+<ol class="steps">
+  <li>La nueva debe pagar <b>más comisión total</b> que todas las que reemplaza juntas…</li>
+  <li>…y además cubrir su propio ancho de banda: un extra de al menos <code>-incrementalrelayfee</code> × su tamaño.</li>
+  <li>El diagrama de tasas de comisión de la mempool debe <b>mejorar</b> (con la mempool por clústeres de v31, se compara de forma más precisa).</li>
+  <li>No puede expulsar demasiadas transacciones de golpe.</li>
+</ol>
+<p>Desde la v28 todas las transacciones son reemplazables por defecto («full RBF»): era la realidad de la red de todos modos.</p>
+
+<h2>La mempool por clústeres (v31)</h2>
+<p>Las transacciones de la mempool forman grupos conectados («clústeres»): padres, hijos, nietos… <src file="src/txgraph.cpp">txgraph.cpp</src> mantiene esos grupos y <src file="src/cluster_linearize.h">cluster_linearize.h</src> calcula el <b>orden óptimo</b> de cada uno, partido en «trozos» (chunks) de tasa de comisión decreciente. Ese mismo orden sirve para tres cosas: elegir qué entra en el bloque, qué se expulsa si la mempool está llena y si un reemplazo mejora las cosas. Límites: <code>DEFAULT_CLUSTER_LIMIT</code> = 64 transacciones y 101 kvB por clúster.</p>
+<div class="callout info"><span class="t">CPFP: el hijo paga por el padre</span><p>Si una transacción paga poca comisión, el receptor puede gastar su salida con una transacción hija de comisión alta. El minero, que ordena por trozos, incluye a ambas juntas porque <b>como paquete</b> le compensan. Pruébalo en el juego de abajo con D y E.</p></div>
+
+<h2>Construir un bloque: BlockAssembler</h2>
+<code-ref file="src/node/miner.cpp" fn="BlockAssembler::addChunks" title="llenar la plantilla">
+  <n m="m_mempool->GetBlockBuilderChunk(selected_transactions);">Pide a la mempool el siguiente mejor trozo (el de mayor tasa de comisión de entre todos los clústeres).</n>
+  <n m="if (chunk_feerate_vsize << m_options.blockMinFeeRate.GetFeePerVSize()) {">Si ya no paga ni la tasa mínima, se para: todo lo que queda paga menos.</n>
+  <n m="if (!TestChunkBlockLimits(chunk_feerate, chunk_sig_ops) || !TestChunkTransactions(selected_transactions)) {">¿Cabe en peso y en sigops? ¿Son finales sus transacciones?</n>
+  <n m="m_mempool->SkipBuilderChunk();">Si no cabe, se salta y se prueba el siguiente.</n>
+  <n m="nConsecutiveFailed > MAX_CONSECUTIVE_FAILURES">Heurística: si el bloque está casi lleno y llevamos 1000 fallos seguidos, se termina.</n>
+  <n m="m_mempool->IncludeBuilderChunk();">Si cabe, entra entero.</n>
+</code-ref>
+<div class="game" data-game="blocktemplate"></div>
+<div class="callout"><span class="t">Para auditar</span><p>Un fallo en la política normalmente no rompe el consenso, pero puede permitir ataques de denegación de servicio (llenar tu memoria o tu CPU) o «pinning» (impedir que tu transacción se confirme). Las reglas de mempool son las que más cambian entre versiones: compara siempre <code>git diff vA..vB -- src/policy src/txmempool.cpp</code>.</p></div>
+
+<div class="quiz" data-title="Test del nivel 9"><script type="application/json">[
+{"q":"Un minero incluye en un bloque una transacción NO estándar pero válida por consenso. ¿Qué hace tu nodo?","o":["Rechaza el bloque","Acepta el bloque: la política no se aplica a los bloques","Expulsa al minero","Se cuelga"],"a":1,"why":"La política sólo filtra transacciones sueltas."},
+{"q":"¿Por qué no se retransmiten transacciones de menos de 65 bytes (sin testigo)?","o":["Ocupan poco","CVE-2017-12842: una de 64 bytes podría hacerse pasar por un nodo del árbol de Merkle","No pagan comisión","Son coinbase"],"a":1,"why":"Comentario en PreChecks."},
+{"q":"¿Qué es «polvo»?","o":["Transacciones viejas","Una salida que costaría más en comisiones gastar que lo que vale","Bloques vacíos","Monedas perdidas"],"a":1,"why":"GetDustThreshold."},
+{"q":"¿Qué permite CPFP?","o":["Que el hijo con comisión alta «arrastre» a un padre de comisión baja al bloque","Cancelar transacciones","Duplicar monedas","Saltarse la mempool"],"a":0,"why":"El minero evalúa paquetes/trozos por tasa conjunta."},
+{"q":"¿Por qué no se retransmiten salidas a versiones de testigo futuras?","o":["Por capricho","Para proteger a usuarios: un soft fork futuro podría dar reglas a esas salidas","Porque son inválidas","Por tamaño"],"a":1,"why":"IsStandard: tipos desconocidos no son estándar."}
+]</script></div>

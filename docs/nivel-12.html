@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nivel 12 · Arranque, RPC, interfaces y utilidades · Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="nivel-12">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html">3 · Transacciones</a></li>
+<li><a href="nivel-4.html">4 · Script</a></li>
+<li><a href="nivel-5.html">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html">8 · Red P2P</a></li>
+<li><a href="nivel-9.html">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html" class="active">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <div class="kicker">Nivel 12 · El programa completo</div>
+<h1>Arranque, RPC, interfaces y utilidades</h1>
+<p class="lead">Ya conoces todas las piezas. Este nivel muestra cómo se ensamblan: qué pasa desde que escribes <code>bitcoind</code> hasta que el nodo está sincronizando, qué hilos corren a la vez, cómo se protegen los datos compartidos y cómo le das órdenes al nodo.</p>
+
+<h2>De main() a nodo funcionando</h2>
+<p>En el <a href="nivel-0.html">nivel 0</a> viste <code>main()</code>. Llama a <code>AppInit</code>:</p>
+<figure class="cref" id="c1" data-start="167" data-file="src/bitcoind.cpp"><figcaption><span class="cref-file">src/bitcoind.cpp</span><span class="cref-lines">líneas 167–258</span><span class="cref-title">AppInit (bitcoind)</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/bitcoind.cpp#L167-L258" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/bitcoind.cpp&amp;l=167" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static bool AppInit(NodeContext&amp; node)
+{
+    bool fRet = false;
+    ArgsManager&amp; args = *Assert(node.args);
+
+#if HAVE_DECL_FORK
+    // Communication with parent after daemonizing. This is used for signalling in the following ways:
+    // - a boolean token is sent when the initialization process (all the Init* functions) have finished to indicate
+    // that the parent process can quit, and whether it was successful/unsuccessful.
+    // - an unexpected shutdown of the child process creates an unexpected end of stream at the parent
+    // end, which is interpreted as failure to start.
+    TokenPipeEnd daemon_ep;
+#endif
+    std::any context{&amp;node};
+    try
+    {
+        // -server defaults to true for bitcoind but not for the GUI so do this here
+        args.SoftSetBoolArg(&quot;-server&quot;, true);
+        // Set this early so that parameter interactions go to console
+        InitLogging(args);
+        InitParameterInteraction(args);
+        if (!AppInitBasicSetup(args, node.exit_status)) {
+            // InitError will have been called with detailed error, which ends up on console
+            return false;
+        }
+        if (!AppInitParameterInteraction(args)) {
+            // InitError will have been called with detailed error, which ends up on console
+            return false;
+        }
+
+        node.warnings = std::make_unique&lt;node::Warnings&gt;();
+
+        node.kernel = std::make_unique&lt;kernel::Context&gt;();
+        node.ecc_context = std::make_unique&lt;ECC_Context&gt;();
+        if (!AppInitSanityChecks(*node.kernel))
+        {
+            // InitError will have been called with detailed error, which ends up on console
+            return false;
+        }
+
+        if (args.GetBoolArg(&quot;-daemon&quot;, DEFAULT_DAEMON) || args.GetBoolArg(&quot;-daemonwait&quot;, DEFAULT_DAEMONWAIT)) {
+#if HAVE_DECL_FORK
+            tfm::format(std::cout, CLIENT_NAME &quot; starting\n&quot;);
+
+            // Daemonize
+            switch (fork_daemon(1, 0, daemon_ep)) { // don&#x27;t chdir (1), do close FDs (0)
+            case 0: // Child: continue.
+                // If -daemonwait is not enabled, immediately send a success token the parent.
+                if (!args.GetBoolArg(&quot;-daemonwait&quot;, DEFAULT_DAEMONWAIT)) {
+                    daemon_ep.TokenWrite(1);
+                    daemon_ep.Close();
+                }
+                break;
+            case -1: // Error happened.
+                return InitError(Untranslated(strprintf(&quot;fork_daemon() failed: %s&quot;, SysErrorString(errno))));
+            default: { // Parent: wait and exit.
+                int token = daemon_ep.TokenRead();
+                if (token) { // Success
+                    exit(EXIT_SUCCESS);
+                } else { // fRet = false or token read error (premature exit).
+                    tfm::format(std::cerr, &quot;Error during initialization - check debug.log for details\n&quot;);
+                    exit(EXIT_FAILURE);
+                }
+            }
+            }
+#else
+            return InitError(Untranslated(&quot;-daemon is not supported on this operating system&quot;));
+#endif // HAVE_DECL_FORK
+        }
+        // Lock critical directories after daemonization
+        if (!AppInitLockDirectories())
+        {
+            // If locking a directory failed, exit immediately
+            return false;
+        }
+        fRet = AppInitInterfaces(node) &amp;&amp; AppInitMain(node);
+    }
+    catch (const std::exception&amp; e) {
+        PrintExceptionContinue(&amp;e, &quot;AppInit()&quot;);
+    } catch (...) {
+        PrintExceptionContinue(nullptr, &quot;AppInit()&quot;);
+    }
+
+#if HAVE_DECL_FORK
+    if (daemon_ep.IsOpen()) {
+        // Signal initialization status to parent, then close pipe.
+        daemon_ep.TokenWrite(fRet);
+        daemon_ep.Close();
+    }
+#endif
+    return fRet;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 184, "html": "bitcoind siempre acepta órdenes RPC (la GUI no, por defecto)."}, {"line": 186, "html": "Prepara el registro (<code>debug.log<\/code>)."}, {"line": 188, "html": "Paso 1: configuración básica del sistema."}, {"line": 192, "html": "Pasos 2–3: comprobar que las opciones son coherentes entre sí."}, {"line": 199, "html": "Crea el contexto del «núcleo» de validación…"}, {"line": 200, "html": "…e inicializa libsecp256k1."}]</script></figure>
+<p>Y luego <code>AppInitMain</code> en <a class="srclink" href="explorador.html#f=src/init.cpp">init.cpp</a> ejecuta los pasos. El propio código los numera con comentarios; esta lista se ha generado buscándolos:</p>
+<ol class="steps">
+<li><a href="explorador.html#f=src/init.cpp&amp;l=884">Paso 1 (init.cpp:884)</a> — <code>setup</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=922">Paso 2 (init.cpp:922)</a> — <code>parameter interactions</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=1058">Paso 3 (init.cpp:1058)</a> — <code>parameter-to-internal-flags</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=1178">Paso 4 (init.cpp:1178)</a> — <code>sanity checks</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=1564">Paso 5 (init.cpp:1564)</a> — <code>verify wallet database integrity</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=1571">Paso 6 (init.cpp:1571)</a> — <code>network initialization</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=1827">Paso 7 (init.cpp:1827)</a> — <code>load block chain</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=1902">Paso 8 (init.cpp:1902)</a> — <code>start indexers</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=1927">Paso 9 (init.cpp:1927)</a> — <code>load wallet</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=1934">Paso 10 (init.cpp:1934)</a> — <code>data directory maintenance</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=1956">Paso 11 (init.cpp:1956)</a> — <code>import blocks</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=2074">Paso 12 (init.cpp:2074)</a> — <code>start node</code></li>
+<li><a href="explorador.html#f=src/init.cpp&amp;l=2287">Paso 13 (init.cpp:2287)</a> — <code>finished</code></li>
+</ol>
+<pre class="mermaid">
+flowchart TD
+  A["Pasos 1-4<br/>opciones, comprobaciones, bloqueo del directorio de datos"] --> B["Paso 6: red<br/>CConnman, PeerManager, addrman, banman"]
+  B --> C["Paso 7: cargar la cadena<br/>índice de bloques, UTXO, verificación rápida de los últimos bloques"]
+  C --> D["Paso 8: índices (txindex…)"]
+  D --> E["Paso 9: cartera"]
+  E --> F["Paso 11: importar bloques / reindex"]
+  F --> G["Paso 12: arrancar hilos de red"]
+  G --> H["Paso 13: «init message: Done loading»"]
+</pre>
+
+<h2>Los hilos del nodo</h2>
+<p>El nodo hace muchas cosas a la vez, cada una en su hilo. Puedes verlos con <code>top -H -p $(pidof bitcoind)</code>: los nombres coinciden con los del código.</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Nombre del hilo</th><th>Qué hace</th><th>Dónde se crea</th></tr></thead>
+<tbody>
+<tr><td><code>b-net</code></td><td>Lee y escribe en los sockets</td><td><a class="srclink" href="explorador.html#f=src/net.cpp&amp;l=3555">net.cpp</a></td></tr>
+<tr><td><code>b-msghand</code></td><td>Procesa los mensajes P2P (y por tanto valida bloques y transacciones)</td><td><a class="srclink" href="explorador.html#f=src/net.cpp&amp;l=3580">net.cpp</a></td></tr>
+<tr><td><code>b-opencon</code>, <code>b-addcon</code></td><td>Abre conexiones salientes</td><td><a class="srclink" href="explorador.html#f=src/net.cpp&amp;l=3575">net.cpp</a></td></tr>
+<tr><td><code>b-dnsseed</code></td><td>Consulta las semillas DNS en el primer arranque</td><td><a class="srclink" href="explorador.html#f=src/net.cpp&amp;l=3560">net.cpp</a></td></tr>
+<tr><td><code>b-scriptch.N</code></td><td>Verifican firmas en paralelo (<code>CCheckQueue</code>)</td><td><a class="srclink" href="explorador.html#f=src/checkqueue.h&amp;l=151">checkqueue.h</a></td></tr>
+<tr><td><code>b-scheduler</code></td><td>Tareas periódicas y notificaciones</td><td><a class="srclink" href="explorador.html#f=src/init.cpp&amp;l=1457">init.cpp</a></td></tr>
+<tr><td><code>b-http</code>, <code>b-httpworker.N</code></td><td>Servidor RPC/REST</td><td><a class="srclink" href="explorador.html#f=src/httpserver.cpp&amp;l=301">httpserver.cpp</a></td></tr>
+<tr><td><code>b-initload</code></td><td>Importación de bloques al arrancar</td><td><a class="srclink" href="explorador.html#f=src/init.cpp&amp;l=2026">init.cpp</a></td></tr>
+</tbody></table></div>
+
+<h2>Candados: que dos hilos no pisen lo mismo</h2>
+<div class="analogy">Un cuaderno compartido por varias personas: sólo quien tiene el bolígrafo puede escribir. <code>cs_main</code> es el bolígrafo del estado de la cadena.</div>
+<figure class="cref" id="c2" data-start="258" data-file="src/sync.h"><figcaption><span class="cref-file">src/sync.h</span><span class="cref-lines">líneas 258–258</span><span class="cref-title">la macro LOCK</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/sync.h#L258" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/sync.h&amp;l=258" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">#define LOCK(cs) UniqueLock UNIQUE_NAME(criticalblock)(MaybeCheckNotHeld(cs), #cs, __FILE__, __LINE__)</code></pre><script type="application/json" class="cref-notes">[{"line": 258, "html": "Coge el candado <code>cs<\/code> hasta el final del bloque <code>{ }<\/code> actual. En compilaciones de depuración, además registra el orden en que se cogen los candados para detectar posibles <b>interbloqueos<\/b> (dos hilos esperándose mutuamente)."}]</script></figure>
+<p>Además, las anotaciones <code>GUARDED_BY(cs_main)</code> y <code>EXCLUSIVE_LOCKS_REQUIRED(cs_main)</code> (<a class="srclink" href="explorador.html#f=src/threadsafety.h">threadsafety.h</a>) permiten que el compilador Clang compruebe <b>en tiempo de compilación</b> que nadie accede a esos datos sin el candado.</p>
+
+<h2>Dar órdenes al nodo: JSON-RPC</h2>
+<pre class="mermaid">
+sequenceDiagram
+  participant U as bitcoin-cli
+  participant H as httpserver.cpp (libevent)
+  participant A as httprpc.cpp
+  participant T as rpc/server.cpp (CRPCTable)
+  participant R as rpc/blockchain.cpp
+  U->>H: POST / {"method":"getblockcount"} + usuario:contraseña
+  H->>A: HTTPReq_JSONRPC
+  A->>A: RPCAuthorized (cookie o rpcauth)
+  A->>T: execute(request)
+  T->>R: getblockcount()
+  R-->>U: 945123
+</pre>
+<figure class="cref" id="c3" data-start="63" data-file="src/httprpc.cpp"><figcaption><span class="cref-file">src/httprpc.cpp</span><span class="cref-lines">líneas 63–82</span><span class="cref-title">autenticación</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/httprpc.cpp#L63-L82" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/httprpc.cpp&amp;l=63" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static bool CheckUserAuthorized(std::string_view user, std::string_view pass)
+{
+    for (const auto&amp; fields : g_rpcauth) {
+        if (!TimingResistantEqual(std::string_view(fields[0]), user)) {
+            continue;
+        }
+
+        const std::string&amp; salt = fields[1];
+        const std::string&amp; hash = fields[2];
+
+        std::array&lt;unsigned char, CHMAC_SHA256::OUTPUT_SIZE&gt; out;
+        CHMAC_SHA256(UCharCast(salt.data()), salt.size()).Write(UCharCast(pass.data()), pass.size()).Finalize(out.data());
+        std::string hash_from_pass = HexStr(out);
+
+        if (TimingResistantEqual(hash_from_pass, hash)) {
+            return true;
+        }
+    }
+    return false;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 66, "html": "Comparación en tiempo constante: el tiempo de respuesta no revela cuántos caracteres acertaste."}, {"line": 74, "html": "Con <code>-rpcauth<\/code>, el nodo no guarda tu contraseña, sólo un HMAC-SHA256 con sal (<a class=\"srclink\" href=\"explorador.html#f=share/rpcauth/rpcauth.py\">share/rpcauth/rpcauth.py<\/a> lo genera). Por defecto se usa un archivo <code>.cookie<\/code> aleatorio en el directorio de datos."}]</script></figure>
+<figure class="cref" id="c4" data-start="247" data-file="src/rpc/blockchain.cpp"><figcaption><span class="cref-file">src/rpc/blockchain.cpp</span><span class="cref-lines">líneas 247–267</span><span class="cref-title">un comando RPC completo</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/rpc/blockchain.cpp#L247-L267" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/rpc/blockchain.cpp&amp;l=247" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">static RPCHelpMan getblockcount()
+{
+    return RPCHelpMan{
+        &quot;getblockcount&quot;,
+        &quot;Returns the height of the most-work fully-validated chain.\n&quot;
+                &quot;The genesis block has height 0.\n&quot;,
+                {},
+                RPCResult{
+                    RPCResult::Type::NUM, &quot;&quot;, &quot;The current block count&quot;},
+                RPCExamples{
+                    HelpExampleCli(&quot;getblockcount&quot;, &quot;&quot;)
+            + HelpExampleRpc(&quot;getblockcount&quot;, &quot;&quot;)
+                },
+        [&amp;](const RPCHelpMan&amp; self, const JSONRPCRequest&amp; request) -&gt; UniValue
+{
+    ChainstateManager&amp; chainman = EnsureAnyChainman(request.context);
+    LOCK(cs_main);
+    return chainman.ActiveChain().Height();
+},
+    };
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 250, "html": "Nombre del comando…"}, {"line": 251, "html": "…y su ayuda (lo que ves con <code>bitcoin-cli help getblockcount<\/code>)."}, {"line": 262, "html": "Obtiene el gestor de cadenas del contexto del nodo."}, {"line": 263, "html": "Coge el candado para leer la cadena de forma coherente…"}, {"line": 264, "html": "…y devuelve la altura de la punta. Todos los comandos RPC siguen este patrón."}]</script></figure>
+<div class="callout bad"><span class="t">Seguridad del RPC</span><p>El RPC da control total sobre el nodo (y la cartera). Nunca lo expongas a Internet: por defecto sólo escucha en <code>127.0.0.1</code>. Las opciones <code>-rpcallowip</code>/<code>-rpcbind</code> deben usarse con cuidado.</p></div>
+
+<h2>Otras piezas</h2>
+<div class="grid2">
+  <div class="card"><h4>Señales de validación</h4><p><a class="srclink" href="explorador.html#f=src/validationinterface.cpp">validationinterface.cpp</a>: cuando se conecta un bloque o entra una tx en la mempool, se avisa a los «suscriptores» (cartera, índices, ZMQ) desde el hilo scheduler.</p></div>
+  <div class="card"><h4>Interfaces y multiproceso</h4><p><a href="explorador.html#d=src/interfaces"><code>src/interfaces/</code></a> separa nodo, cartera y GUI. Con <code>bitcoin-node</code> pueden ejecutarse en procesos distintos que hablan por IPC (<a href="explorador.html#d=src/ipc"><code>src/ipc/</code></a>, Cap'n Proto), por ejemplo para minería con Stratum v2.</p></div>
+  <div class="card"><h4>libbitcoinkernel</h4><p><a href="explorador.html#d=src/kernel"><code>src/kernel/</code></a>: el esfuerzo por aislar la validación en una biblioteca reutilizable, con API en C (<a class="srclink" href="explorador.html#f=src/kernel/bitcoinkernel.h">bitcoinkernel.h</a>). Para auditar es oro: delimita qué código es imprescindible.</p></div>
+  <div class="card"><h4>ZMQ y REST</h4><p>Notificaciones push (<a href="explorador.html#d=src/zmq"><code>src/zmq/</code></a>) y una API REST de sólo lectura (<a class="srclink" href="explorador.html#f=src/rest.cpp">rest.cpp</a>).</p></div>
+  <div class="card"><h4>Registro</h4><p><a class="srclink" href="explorador.html#f=src/logging.cpp">logging.cpp</a>: <code>-debug=net</code>, <code>-debug=validation</code>… para ver por dentro lo que hace el nodo.</p></div>
+  <div class="card"><h4>Utilidades</h4><p><a href="explorador.html#d=src/util"><code>src/util/</code></a>: cadenas, tiempo, archivos, comprobaciones (<code>Assert</code>, <code>Assume</code>), hilos.</p></div>
+</div>
+
+<h2>Experimento: sigue un bloque con el registro</h2>
+<pre class="shell">./build/bin/bitcoind -regtest -daemon -debug=validation -debug=net
+./build/bin/bitcoin-cli -regtest createwallet prueba
+ADDR=$(./build/bin/bitcoin-cli -regtest getnewaddress)
+./build/bin/bitcoin-cli -regtest generatetoaddress 1 $ADDR
+tail -n 30 ~/.bitcoin/regtest/debug.log     <span class="c"># verás UpdateTip, ConnectBlock, etc.</span></pre>
+
+<div class="quiz" data-title="Test del nivel 12"><script type="application/json">[
+{"q":"¿Qué protege cs_main?","o":["La cartera","El estado de la cadena (índice de bloques, cadena activa, UTXO…)","Los sockets","El RPC"],"a":1,"why":"Es el candado principal de validación."},
+{"q":"¿Qué hilo verifica firmas en paralelo?","o":["b-net","b-scriptch.N","b-http","b-dnsseed"],"a":1,"why":"CCheckQueue en checkqueue.h."},
+{"q":"¿Cómo guarda el nodo una contraseña configurada con -rpcauth?","o":["En texto plano","Como HMAC-SHA256 con sal","Cifrada con AES","No la guarda: usa cookie siempre"],"a":1,"why":"CheckUserAuthorized compara el HMAC."},
+{"q":"¿Por qué comparar contraseñas en «tiempo constante»?","o":["Es más rápido","Para no revelar información por el tiempo de respuesta","Por compatibilidad","No importa"],"a":1,"why":"TimingResistantEqual evita ataques de temporización."}
+]</script></div>
+
+    <nav class="prevnext"><a class="prev" href="nivel-11.html"><span>← Anterior</span>Nivel 11 · La cartera (wallet)</a><a class="next" href="nivel-13.html"><span>Siguiente →</span>Nivel 13 · Cómo auditar Bitcoin Core por tu cuenta</a></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+<script type="module" src="assets/diagrams.js"></script>
+</body>
+</html>

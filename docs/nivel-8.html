@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nivel 8 · La red P2P · Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="nivel-8">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html">3 · Transacciones</a></li>
+<li><a href="nivel-4.html">4 · Script</a></li>
+<li><a href="nivel-5.html">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html" class="active">8 · Red P2P</a></li>
+<li><a href="nivel-9.html">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <div class="kicker">Nivel 8 · Comunicación</div>
+<h1>La red P2P</h1>
+<p class="lead">Tu nodo habla con otros nodos sin ningún servidor central. Este código no decide qué es válido (eso es el consenso), pero es la <b>superficie de ataque</b> más expuesta: cualquiera en Internet puede enviarte bytes. Por eso gran parte del código de red es defensivo.</p>
+
+<h2>Dos capas</h2>
+<div class="grid2">
+  <div class="card"><h4><a class="srclink" href="explorador.html#f=src/net.cpp">net.cpp</a> — CConnman</h4><p>«El cartero»: abre y cierra sockets, gestiona hilos, cifra (BIP324), parte el flujo de bytes en mensajes. No entiende qué dicen.</p></div>
+  <div class="card"><h4><a class="srclink" href="explorador.html#f=src/net_processing.cpp">net_processing.cpp</a> — PeerManager</h4><p>«El que lee las cartas»: interpreta cada mensaje (version, headers, block, tx…), decide qué pedir, a quién, y castiga a los que se portan mal.</p></div>
+</div>
+<pre class="mermaid">
+flowchart LR
+  S["Socket TCP<br/>(o Tor / I2P / CJDNS)"] --> T["Transporte v2 (BIP324)<br/>ChaCha20-Poly1305"]
+  T --> N["CConnman<br/>ThreadSocketHandler"]
+  N -->|"mensajes completos"| Q["Cola por par"]
+  Q --> PM["PeerManager::ProcessMessages<br/>ThreadMessageHandler"]
+  PM --> V["validation.cpp / mempool"]
+  PM -->|"respuestas"| N
+</pre>
+
+<h2>Formato de un mensaje</h2>
+<figure class="cref" id="c1" data-start="28" data-file="src/protocol.h"><figcaption><span class="cref-file">src/protocol.h</span><span class="cref-lines">líneas 28–53</span><span class="cref-title">cabecera de 24 bytes (transporte v1)</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/protocol.h#L28-L53" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/protocol.h&amp;l=28" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">class CMessageHeader
+{
+public:
+    static constexpr size_t MESSAGE_TYPE_SIZE = 12;
+    static constexpr size_t MESSAGE_SIZE_SIZE = 4;
+    static constexpr size_t CHECKSUM_SIZE = 4;
+    static constexpr size_t MESSAGE_SIZE_OFFSET = std::tuple_size_v&lt;MessageStartChars&gt; + MESSAGE_TYPE_SIZE;
+    static constexpr size_t CHECKSUM_OFFSET = MESSAGE_SIZE_OFFSET + MESSAGE_SIZE_SIZE;
+    static constexpr size_t HEADER_SIZE = std::tuple_size_v&lt;MessageStartChars&gt; + MESSAGE_TYPE_SIZE + MESSAGE_SIZE_SIZE + CHECKSUM_SIZE;
+
+    explicit CMessageHeader() = default;
+
+    /** Construct a P2P message header from message-start characters, a message type and the size of the message.
+     * @note Passing in a `msg_type` longer than MESSAGE_TYPE_SIZE will result in a run-time assertion error.
+     */
+    CMessageHeader(const MessageStartChars&amp; pchMessageStartIn, const char* msg_type, unsigned int nMessageSizeIn);
+
+    std::string GetMessageType() const;
+    bool IsMessageTypeValid() const;
+
+    SERIALIZE_METHODS(CMessageHeader, obj) { READWRITE(obj.pchMessageStart, obj.m_msg_type, obj.nMessageSize, obj.pchChecksum); }
+
+    MessageStartChars pchMessageStart{};
+    char m_msg_type[MESSAGE_TYPE_SIZE]{};
+    uint32_t nMessageSize{std::numeric_limits&lt;uint32_t&gt;::max()};
+    uint8_t pchChecksum[CHECKSUM_SIZE]{};</code></pre><script type="application/json" class="cref-notes">[{"line": 31, "html": "El tipo de mensaje: 12 caracteres ASCII rellenos con ceros (p. ej. «block»)."}, {"line": 36, "html": "Total: 4 (magic) + 12 (tipo) + 4 (longitud) + 4 (checksum) = 24 bytes."}, {"line": 50, "html": "«Magic bytes»: <code>f9 be b4 d9<\/code> en mainnet. Identifica la red (no mezclar mainnet con testnet) y marca el inicio de cada mensaje."}, {"line": 52, "html": "Longitud del contenido. Se limita (4 MB) para que nadie anuncie mensajes gigantes."}, {"line": 53, "html": "Los 4 primeros bytes del SHA256d del contenido: detecta corrupción. (En v2 lo sustituye el cifrado autenticado.)"}]</script></figure>
+<div class="game" data-game="p2pmsg"></div>
+
+<h3>Todos los mensajes del protocolo</h3>
+<div class="table-wrap tall"><div class="table-wrap"><table class="data"><thead><tr><th>Mensaje</th><th>Línea</th><th>Comentario original del código (inglés)</th></tr></thead><tbody>
+<tr><td><code>version</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=65">65</a></td><td class="small">The version message provides information about the transmitting node to the receiving node at the beginning of a connection.</td></tr>
+<tr><td><code>verack</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=70">70</a></td><td class="small">The verack message acknowledges a previously-received version message, informing the connecting node that it can begin to send other messages.</td></tr>
+<tr><td><code>addr</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=75">75</a></td><td class="small">The addr (IP address) message relays connection information for peers on the network.</td></tr>
+<tr><td><code>addrv2</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=81">81</a></td><td class="small">The addrv2 message relays connection information for peers on the network just like the addr message, but is extended to allow gossiping of longer node addresses (see BIP155).</td></tr>
+<tr><td><code>sendaddrv2</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=87">87</a></td><td class="small">The sendaddrv2 message signals support for receiving ADDRV2 messages (BIP155). It also implies that its sender can encode as ADDRV2 and would send ADDRV2 instead of ADDR to a peer that has signaled ADDRV2 support by sending SENDADDRV2.</td></tr>
+<tr><td><code>inv</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=92">92</a></td><td class="small">The inv message (inventory message) transmits one or more inventories of objects known to the transmitting peer.</td></tr>
+<tr><td><code>getdata</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=96">96</a></td><td class="small">The getdata message requests one or more data objects from another node.</td></tr>
+<tr><td><code>merkleblock</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=102">102</a></td><td class="small">The merkleblock message is a reply to a getdata message which requested a block using the inventory type MSG_MERKLEBLOCK. @since protocol version 70001 as described by BIP37.</td></tr>
+<tr><td><code>getblocks</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=107">107</a></td><td class="small">The getblocks message requests an inv message that provides block header hashes starting from a particular point in the block chain.</td></tr>
+<tr><td><code>getheaders</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=113">113</a></td><td class="small">The getheaders message requests a headers message that provides block headers starting from a particular point in the block chain. @since protocol version 31800.</td></tr>
+<tr><td><code>tx</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=117">117</a></td><td class="small">The tx message transmits a single transaction.</td></tr>
+<tr><td><code>headers</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=123">123</a></td><td class="small">The headers message sends one or more block headers to a node which previously requested certain headers with a getheaders message. @since protocol version 31800.</td></tr>
+<tr><td><code>block</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=127">127</a></td><td class="small">The block message transmits a single serialized block.</td></tr>
+<tr><td><code>getaddr</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=132">132</a></td><td class="small">The getaddr message requests an addr message from the receiving node, preferably one with lots of IP addresses of other receiving nodes.</td></tr>
+<tr><td><code>mempool</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=139">139</a></td><td class="small">The mempool message requests the TXIDs of transactions that the receiving node has verified as valid but which have not yet appeared in a block. @since protocol version 60002 as described by BIP35. Only available with service bit NODE_BLOOM, see also BIP111.</td></tr>
+<tr><td><code>ping</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=144">144</a></td><td class="small">The ping message is sent periodically to help confirm that the receiving peer is still connected.</td></tr>
+<tr><td><code>pong</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=150">150</a></td><td class="small">The pong message replies to a ping message, proving to the pinging node that the ponging node is still alive. @since protocol version 60001 as described by BIP31.</td></tr>
+<tr><td><code>notfound</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=156">156</a></td><td class="small">The notfound message is a reply to a getdata message which requested an object the receiving node does not have available for relay. @since protocol version 70001.</td></tr>
+<tr><td><code>filterload</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=164">164</a></td><td class="small">The filterload message tells the receiving peer to filter all relayed transactions and requested merkle blocks through the provided filter. @since protocol version 70001 as described by BIP37. Only available with service bit NODE_BLOOM since protocol version 70011 as described by BIP111.</td></tr>
+<tr><td><code>filteradd</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=172">172</a></td><td class="small">The filteradd message tells the receiving peer to add a single element to a previously-set bloom filter, such as a new public key. @since protocol version 70001 as described by BIP37. Only available with service bit NODE_BLOOM since protocol version 70011 as described by BIP111.</td></tr>
+<tr><td><code>filterclear</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=180">180</a></td><td class="small">The filterclear message tells the receiving peer to remove a previously-set bloom filter. @since protocol version 70001 as described by BIP37. Only available with service bit NODE_BLOOM since protocol version 70011 as described by BIP111.</td></tr>
+<tr><td><code>sendheaders</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=186">186</a></td><td class="small">Indicates that a node prefers to receive new block announcements via a &quot;headers&quot; message rather than an &quot;inv&quot;. @since protocol version 70012 as described by BIP130.</td></tr>
+<tr><td><code>feefilter</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=192">192</a></td><td class="small">The feefilter message tells the receiving peer not to inv us any txs which do not meet the specified min fee rate. @since protocol version 70013 as described by BIP133</td></tr>
+<tr><td><code>sendcmpct</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=200">200</a></td><td class="small">Contains a 1-byte bool and 8-byte LE version number. Indicates that a node is willing to provide blocks via &quot;cmpctblock&quot; messages. May indicate that a node prefers to receive new block announcements via a &quot;cmpctblock&quot; message rather than an &quot;inv&quot;, depending on message contents. @since protocol version 70014 as described by BIP 152</td></tr>
+<tr><td><code>cmpctblock</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=206">206</a></td><td class="small">Contains a CBlockHeaderAndShortTxIDs object - providing a header and list of &quot;short txids&quot;. @since protocol version 70014 as described by BIP 152</td></tr>
+<tr><td><code>getblocktxn</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=212">212</a></td><td class="small">Contains a BlockTransactionsRequest Peer should respond with &quot;blocktxn&quot; message. @since protocol version 70014 as described by BIP 152</td></tr>
+<tr><td><code>blocktxn</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=218">218</a></td><td class="small">Contains a BlockTransactions. Sent in response to a &quot;getblocktxn&quot; message. @since protocol version 70014 as described by BIP 152</td></tr>
+<tr><td><code>getcfilters</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=224">224</a></td><td class="small">getcfilters requests compact filters for a range of blocks. Only available with service bit NODE_COMPACT_FILTERS as described by BIP 157 &amp; 158.</td></tr>
+<tr><td><code>cfilter</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=229">229</a></td><td class="small">cfilter is a response to a getcfilters request containing a single compact filter.</td></tr>
+<tr><td><code>getcfheaders</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=237">237</a></td><td class="small">getcfheaders requests a compact filter header and the filter hashes for a range of blocks, which can then be used to reconstruct the filter headers for those blocks. Only available with service bit NODE_COMPACT_FILTERS as described by BIP 157 &amp; 158.</td></tr>
+<tr><td><code>cfheaders</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=242">242</a></td><td class="small">cfheaders is a response to a getcfheaders request containing a filter header and a vector of filter hashes for each subsequent block in the requested range.</td></tr>
+<tr><td><code>getcfcheckpt</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=249">249</a></td><td class="small">getcfcheckpt requests evenly spaced compact filter headers, enabling parallelized download and validation of the headers between them. Only available with service bit NODE_COMPACT_FILTERS as described by BIP 157 &amp; 158.</td></tr>
+<tr><td><code>cfcheckpt</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=254">254</a></td><td class="small">cfcheckpt is a response to a getcfcheckpt request containing a vector of evenly spaced filter headers for blocks on the requested chain.</td></tr>
+<tr><td><code>wtxidrelay</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=260">260</a></td><td class="small">Indicates that a node prefers to relay transactions via wtxid, rather than txid. @since protocol version 70016 as described by BIP 339.</td></tr>
+<tr><td><code>sendtxrcncl</code></td><td><a href="explorador.html#f=src/protocol.h&amp;l=266">266</a></td><td class="small">Contains a 4-byte version number and an 8-byte salt. The salt is used to compute short txids needed for efficient txreconciliation, as described by BIP 330.</td></tr>
+</tbody></table></div></div>
+
+<h2>El saludo (handshake)</h2>
+<pre class="mermaid">
+sequenceDiagram
+  participant A as Tu nodo
+  participant B as Otro nodo
+  A->>B: version (mi versión, servicios, altura, nonce)
+  B->>A: version
+  Note over A,B: Se negocian extras antes de verack
+  B->>A: wtxidrelay, sendaddrv2, sendtxrcncl
+  A->>B: verack
+  B->>A: verack
+  A->>B: sendheaders, sendcmpct, feefilter, getheaders
+  B->>A: headers (hasta 2000)
+  A->>B: getdata (bloques que faltan)
+  B->>A: block
+  loop cada ~2 minutos
+    A->>B: ping(nonce)
+    B->>A: pong(nonce)
+  end
+</pre>
+<figure class="cref" id="c2" data-start="3585" data-file="src/net_processing.cpp"><figcaption><span class="cref-file">src/net_processing.cpp</span><span class="cref-lines">líneas 3585–3640</span><span class="cref-title">recibir «version»</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/net_processing.cpp#L3585-L3640" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/net_processing.cpp&amp;l=3585" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">    if (msg_type == NetMsgType::VERSION) {
+        if (pfrom.nVersion != 0) {
+            LogDebug(BCLog::NET, &quot;redundant version message from peer=%d\n&quot;, pfrom.GetId());
+            return;
+        }
+
+        int64_t nTime;
+        CService addrMe;
+        uint64_t nNonce = 1;
+        ServiceFlags nServices;
+        int nVersion;
+        std::string cleanSubVer;
+        int starting_height = -1;
+        bool fRelay = true;
+
+        vRecv &gt;&gt; nVersion &gt;&gt; Using&lt;CustomUintFormatter&lt;8&gt;&gt;(nServices) &gt;&gt; nTime;
+        if (nTime &lt; 0) {
+            nTime = 0;
+        }
+        vRecv.ignore(8); // Ignore the addrMe service bits sent by the peer
+        vRecv &gt;&gt; CNetAddr::V1(addrMe);
+        if (!pfrom.IsInboundConn() &amp;&amp; !pfrom.IsPrivateBroadcastConn())
+        {
+            // Overwrites potentially existing services. In contrast to this,
+            // unvalidated services received via gossip relay in ADDR/ADDRV2
+            // messages are only ever added but cannot replace existing ones.
+            m_addrman.SetServices(pfrom.addr, nServices);
+        }
+        if (pfrom.ExpectServicesFromConn() &amp;&amp; !HasAllDesirableServiceFlags(nServices))
+        {
+            LogDebug(BCLog::NET, &quot;peer does not offer the expected services (%08x offered, %08x expected), %s\n&quot;,
+                     nServices,
+                     GetDesirableServiceFlags(nServices),
+                     pfrom.DisconnectMsg(fLogIPs));
+            pfrom.fDisconnect = true;
+            return;
+        }
+
+        if (nVersion &lt; MIN_PEER_PROTO_VERSION) {
+            // disconnect from peers older than this proto version
+            LogDebug(BCLog::NET, &quot;peer using obsolete version %i, %s\n&quot;, nVersion, pfrom.DisconnectMsg(fLogIPs));
+            pfrom.fDisconnect = true;
+            return;
+        }
+
+        if (!vRecv.empty()) {
+            // The version message includes information about the sending node which we don&#x27;t use:
+            //   - 8 bytes (service bits)
+            //   - 16 bytes (ipv6 address)
+            //   - 2 bytes (port)
+            vRecv.ignore(26);
+            vRecv &gt;&gt; nNonce;
+        }
+        if (!vRecv.empty()) {
+            std::string strSubVer;
+            vRecv &gt;&gt; LIMITED_STRING(strSubVer, MAX_SUBVERSION_LENGTH);</code></pre><script type="application/json" class="cref-notes">[{"line": 3586, "html": "Un par sólo puede enviar «version» una vez."}, {"line": 3600, "html": "Lee versión de protocolo, servicios ofrecidos (bits: NODE_NETWORK = tiene todos los bloques, NODE_WITNESS, NODE_P2P_V2…) y su hora."}, {"line": 3613, "html": "Si nos conectamos nosotros y el par no ofrece lo que necesitamos, desconectamos."}, {"line": 3623, "html": "Versiones demasiado antiguas: fuera."}, {"line": 3636, "html": "Un número aleatorio: si recibimos nuestro propio nonce, ¡nos hemos conectado a nosotros mismos!"}, {"line": 3640, "html": "El «user agent» (p. ej. <code>/Satoshi:31.1.0/<\/code>), con longitud limitada: cualquier dato del exterior se acota."}]</script></figure>
+
+<h2>Sincronizar la cadena: primero las cabeceras</h2>
+<p>Un nodo nuevo descarga primero <b>todas las cabeceras</b> (80 bytes cada una, ~75 MB en total), elige la cadena con más trabajo y después descarga los bloques en paralelo de varios pares. Pero hay un riesgo: un atacante podría enviar millones de cabeceras falsas de poca dificultad para llenar tu memoria. La defensa está en <a class="srclink" href="explorador.html#f=src/headerssync.cpp">headerssync.cpp</a>:</p>
+<figure class="cref" id="c3" data-start="102" data-file="src/headerssync.h"><figcaption><span class="cref-file">src/headerssync.h</span><span class="cref-lines">líneas 102–116</span><span class="cref-title">sincronización en dos fases</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/headerssync.h#L102-L116" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/headerssync.h&amp;l=102" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">class HeadersSyncState {
+public:
+    ~HeadersSyncState() = default;
+
+    enum class State {
+        /** PRESYNC means the peer has not yet demonstrated their chain has
+         * sufficient work and we&#x27;re only building commitments to the chain they
+         * serve us. */
+        PRESYNC,
+        /** REDOWNLOAD means the peer has given us a high-enough-work chain,
+         * and now we&#x27;re redownloading the headers we saw before and trying to
+         * accept them */
+        REDOWNLOAD,
+        /** We&#x27;re done syncing with this peer and can discard any remaining state */
+        FINAL</code></pre><script type="application/json" class="cref-notes">[{"line": 110, "html": "Fase 1: se reciben las cabeceras del par pero <b>no se guardan<\/b>; sólo se suma su trabajo y se guarda un compromiso (unos bits de hash) cada cierto número."}, {"line": 114, "html": "Fase 2: si esa cadena supera <code>nMinimumChainWork<\/code> (un valor público fijado en cada versión), se vuelven a pedir las cabeceras y se comprueba que coinciden con los compromisos; ahora sí se guardan."}, {"line": 116, "html": "Así, un atacante tendría que hacer trabajo real (minar) para hacerte gastar memoria."}]</script></figure>
+
+<h2>Recibir un bloque</h2>
+<figure class="cref" id="c4" data-start="4857" data-file="src/net_processing.cpp"><figcaption><span class="cref-file">src/net_processing.cpp</span><span class="cref-lines">líneas 4857–4900</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/net_processing.cpp#L4857-L4900" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/net_processing.cpp&amp;l=4857" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">    if (msg_type == NetMsgType::BLOCK)
+    {
+        // Ignore block received while importing
+        if (m_chainman.m_blockman.LoadingBlocks()) {
+            LogDebug(BCLog::NET, &quot;Unexpected block message received from peer %d\n&quot;, pfrom.GetId());
+            return;
+        }
+
+        std::shared_ptr&lt;CBlock&gt; pblock = std::make_shared&lt;CBlock&gt;();
+        vRecv &gt;&gt; TX_WITH_WITNESS(*pblock);
+
+        LogDebug(BCLog::NET, &quot;received block %s peer=%d\n&quot;, pblock-&gt;GetHash().ToString(), pfrom.GetId());
+
+        const CBlockIndex* prev_block{WITH_LOCK(m_chainman.GetMutex(), return m_chainman.m_blockman.LookupBlockIndex(pblock-&gt;hashPrevBlock))};
+
+        // Check for possible mutation if it connects to something we know so we can check for DEPLOYMENT_SEGWIT being active
+        if (prev_block &amp;&amp; IsBlockMutated(/*block=*/*pblock,
+                           /*check_witness_root=*/DeploymentActiveAfter(prev_block, m_chainman, Consensus::DEPLOYMENT_SEGWIT))) {
+            LogDebug(BCLog::NET, &quot;Received mutated block from peer=%d\n&quot;, peer.m_id);
+            Misbehaving(peer, &quot;mutated block&quot;);
+            WITH_LOCK(cs_main, RemoveBlockRequest(pblock-&gt;GetHash(), peer.m_id));
+            return;
+        }
+
+        bool forceProcessing = false;
+        const uint256 hash(pblock-&gt;GetHash());
+        bool min_pow_checked = false;
+        {
+            LOCK(cs_main);
+            // Always process the block if we requested it, since we may
+            // need it even when it&#x27;s not a candidate for a new best tip.
+            forceProcessing = IsBlockRequested(hash);
+            RemoveBlockRequest(hash, pfrom.GetId());
+            // mapBlockSource is only used for punishing peers and setting
+            // which peers send us compact blocks, so the race between here and
+            // cs_main in ProcessNewBlock is fine.
+            mapBlockSource.emplace(hash, std::make_pair(pfrom.GetId(), true));
+
+            // Check claimed work on this block against our anti-dos thresholds.
+            if (prev_block &amp;&amp; prev_block-&gt;nChainWork + GetBlockProof(*pblock) &gt;= GetAntiDoSWorkThreshold()) {
+                min_pow_checked = true;
+            }
+        }
+        ProcessBlock(pfrom, pblock, forceProcessing, min_pow_checked);</code></pre><script type="application/json" class="cref-notes">[{"line": 4866, "html": "Deserializa el bloque (con testigos). Si los bytes están mal formados, salta una excepción y el mensaje se descarta."}, {"line": 4873, "html": "Comprobación rápida de mutación (Merkle y testigos) antes de nada: si el bloque fue manipulado, el par se marca como malicioso."}, {"line": 4888, "html": "¿Lo habíamos pedido nosotros? Los bloques no solicitados sólo se procesan si son prometedores."}, {"line": 4896, "html": "Antidenegación de servicio: el bloque debe estar en una cadena con suficiente trabajo."}, {"line": 4900, "html": "Y de aquí a <code>ProcessNewBlock<\/code>, el viaje que viste en el nivel 6."}]</script></figure>
+
+<h2>Castigar a los tramposos</h2>
+<figure class="cref" id="c5" data-start="1908" data-file="src/net_processing.cpp"><figcaption><span class="cref-file">src/net_processing.cpp</span><span class="cref-lines">líneas 1908–1951</span><span class="cref-title">¿quién envió un bloque inválido?</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/net_processing.cpp#L1908-L1951" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/net_processing.cpp&amp;l=1908" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">void PeerManagerImpl::MaybePunishNodeForBlock(NodeId nodeid, const BlockValidationState&amp; state,
+                                              bool via_compact_block, const std::string&amp; message)
+{
+    PeerRef peer{GetPeerRef(nodeid)};
+    switch (state.GetResult()) {
+    case BlockValidationResult::BLOCK_RESULT_UNSET:
+        break;
+    case BlockValidationResult::BLOCK_HEADER_LOW_WORK:
+        // We didn&#x27;t try to process the block because the header chain may have
+        // too little work.
+        break;
+    // The node is providing invalid data:
+    case BlockValidationResult::BLOCK_CONSENSUS:
+    case BlockValidationResult::BLOCK_MUTATED:
+        if (!via_compact_block) {
+            if (peer) Misbehaving(*peer, message);
+            return;
+        }
+        break;
+    case BlockValidationResult::BLOCK_CACHED_INVALID:
+        {
+            // Discourage outbound (but not inbound) peers if on an invalid chain.
+            // Exempt HB compact block peers. Manual connections are always protected from discouragement.
+            if (peer &amp;&amp; !via_compact_block &amp;&amp; !peer-&gt;m_is_inbound) {
+                if (peer) Misbehaving(*peer, message);
+                return;
+            }
+            break;
+        }
+    case BlockValidationResult::BLOCK_INVALID_HEADER:
+    case BlockValidationResult::BLOCK_INVALID_PREV:
+        if (peer) Misbehaving(*peer, message);
+        return;
+    // Conflicting (but not necessarily invalid) data or different policy:
+    case BlockValidationResult::BLOCK_MISSING_PREV:
+        if (peer) Misbehaving(*peer, message);
+        return;
+    case BlockValidationResult::BLOCK_TIME_FUTURE:
+        break;
+    }
+    if (message != &quot;&quot;) {
+        LogDebug(BCLog::NET, &quot;peer=%d: %s\n&quot;, nodeid, message);
+    }
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 1920, "html": "Si un par nos manda un bloque que rompe el consenso o está mutado…"}, {"line": 1923, "html": "…se le marca como «mal comportamiento»: se desconecta y su IP queda desaconsejada (no se le aceptan conexiones preferentes durante un tiempo)."}, {"line": 1945, "html": "Un bloque «del futuro» no es culpa del par necesariamente (quizá tu reloj va mal): no se castiga."}]</script></figure>
+
+<h2>Defensa contra el ataque «eclipse»</h2>
+<p>Si un atacante controlara todas tus conexiones, podría ocultarte bloques o mostrarte una cadena falsa (aunque no podría falsificar firmas ni prueba de trabajo). Bitcoin Core se defiende así:</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Defensa</th><th>Dónde</th></tr></thead>
+<tbody>
+<tr><td>8 conexiones salientes completas + 2 sólo de bloques (invisibles para la topología de transacciones) + 1 «feeler» de prueba</td><td><a class="srclink" href="explorador.html#f=src/net.h&amp;l=69">net.h</a></td></tr>
+<tr><td>Gestor de direcciones con 1024 cubos «nuevos» y 256 «probados»; la posición depende de una clave secreta local y del grupo de red de origen, para que un atacante con muchas IPs del mismo rango no llene la tabla</td><td><a class="srclink" href="explorador.html#f=src/addrman_impl.h&amp;l=29">addrman_impl.h</a></td></tr>
+<tr><td>Diversidad de grupos de red / sistemas autónomos (asmap) en las salientes</td><td><a class="srclink" href="explorador.html#f=src/netgroup.cpp">netgroup.cpp</a></td></tr>
+<tr><td>Anclas: al reiniciar, se reconecta a los pares sólo-bloques anteriores</td><td><code>anchors.dat</code>, <a class="srclink" href="explorador.html#f=src/addrdb.cpp">addrdb.cpp</a></td></tr>
+<tr><td>Expulsión de entrantes protegiendo a los «útiles» (baja latencia, que envían bloques/tx nuevos, de redes diversas)</td><td><a class="srclink" href="explorador.html#f=src/node/eviction.cpp">eviction.cpp</a></td></tr>
+</tbody></table></div>
+<figure class="cref" id="c6" data-start="178" data-file="src/node/eviction.cpp"><figcaption><span class="cref-file">src/node/eviction.cpp</span><span class="cref-lines">líneas 178–240</span><span class="cref-title">¿a quién echar cuando no hay hueco?</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/node/eviction.cpp#L178-L240" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/node/eviction.cpp&amp;l=178" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">[[nodiscard]] std::optional&lt;NodeId&gt; SelectNodeToEvict(std::vector&lt;NodeEvictionCandidate&gt;&amp;&amp; vEvictionCandidates)
+{
+    // Protect connections with certain characteristics
+
+    ProtectNoBanConnections(vEvictionCandidates);
+
+    ProtectOutboundConnections(vEvictionCandidates);
+
+    // Deterministically select 4 peers to protect by netgroup.
+    // An attacker cannot predict which netgroups will be protected
+    EraseLastKElements(vEvictionCandidates, CompareNetGroupKeyed, 4);
+    // Protect the 8 nodes with the lowest minimum ping time.
+    // An attacker cannot manipulate this metric without physically moving nodes closer to the target.
+    EraseLastKElements(vEvictionCandidates, ReverseCompareNodeMinPingTime, 8);
+    // Protect 4 nodes that most recently sent us novel transactions accepted into our mempool.
+    // An attacker cannot manipulate this metric without performing useful work.
+    EraseLastKElements(vEvictionCandidates, CompareNodeTXTime, 4);
+    // Protect up to 8 non-tx-relay peers that have sent us novel blocks.
+    EraseLastKElements(vEvictionCandidates, CompareNodeBlockRelayOnlyTime, 8,
+                       [](const NodeEvictionCandidate&amp; n) { return !n.m_relay_txs &amp;&amp; n.fRelevantServices; });
+
+    // Protect 4 nodes that most recently sent us novel blocks.
+    // An attacker cannot manipulate this metric without performing useful work.
+    EraseLastKElements(vEvictionCandidates, CompareNodeBlockTime, 4);
+
+    // Protect some of the remaining eviction candidates by ratios of desirable
+    // or disadvantaged characteristics.
+    ProtectEvictionCandidatesByRatio(vEvictionCandidates);
+
+    if (vEvictionCandidates.empty()) return std::nullopt;
+
+    // If any remaining peers are preferred for eviction consider only them.
+    // This happens after the other preferences since if a peer is really the best by other criteria (esp relaying blocks)
+    //  then we probably don&#x27;t want to evict it no matter what.
+    if (std::any_of(vEvictionCandidates.begin(),vEvictionCandidates.end(),[](NodeEvictionCandidate const &amp;n){return n.prefer_evict;})) {
+        vEvictionCandidates.erase(std::remove_if(vEvictionCandidates.begin(),vEvictionCandidates.end(),
+                                  [](NodeEvictionCandidate const &amp;n){return !n.prefer_evict;}),vEvictionCandidates.end());
+    }
+
+    // Identify the network group with the most connections and youngest member.
+    // (vEvictionCandidates is already sorted by reverse connect time)
+    uint64_t naMostConnections;
+    unsigned int nMostConnections = 0;
+    std::chrono::seconds nMostConnectionsTime{0};
+    std::map&lt;uint64_t, std::vector&lt;NodeEvictionCandidate&gt; &gt; mapNetGroupNodes;
+    for (const NodeEvictionCandidate &amp;node : vEvictionCandidates) {
+        std::vector&lt;NodeEvictionCandidate&gt; &amp;group = mapNetGroupNodes[node.nKeyedNetGroup];
+        group.push_back(node);
+        const auto grouptime{group[0].m_connected};
+
+        if (group.size() &gt; nMostConnections || (group.size() == nMostConnections &amp;&amp; grouptime &gt; nMostConnectionsTime)) {
+            nMostConnections = group.size();
+            nMostConnectionsTime = grouptime;
+            naMostConnections = node.nKeyedNetGroup;
+        }
+    }
+
+    // Reduce to the network group with the most connections
+    vEvictionCandidates = std::move(mapNetGroupNodes[naMostConnections]);
+
+    // Disconnect from the network group with the most connections
+    return vEvictionCandidates.front().id;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 182, "html": "Nunca se echa a los pares con permiso especial…"}, {"line": 184, "html": "…ni a los que conectamos nosotros."}, {"line": 188, "html": "Se protegen 4 por grupo de red, elegidos con una clave secreta: el atacante no puede predecir cuáles."}, {"line": 191, "html": "8 con menor latencia: para falsificarlo habría que estar físicamente cerca."}, {"line": 194, "html": "4 que nos dieron transacciones nuevas útiles: cuesta trabajo real."}, {"line": 201, "html": "4 que nos dieron bloques nuevos: requiere minar."}, {"line": 217, "html": "De los que quedan, se expulsa uno del grupo de red con más conexiones (el más reciente): así un atacante con muchas IPs parecidas es el primero en salir."}]</script></figure>
+
+<h2>Retransmitir transacciones y bloques</h2>
+<div class="grid2">
+  <div class="card"><h4>inv / getdata</h4><p>Se anuncia «tengo la tx X» (por wtxid) y el interesado la pide. <a class="srclink" href="explorador.html#f=src/txrequest.cpp">txrequest.cpp</a> decide a quién pedirla, con preferencia por salientes y tiempos de espera.</p></div>
+  <div class="card"><h4>Compact blocks (BIP152)</h4><p>Como tu mempool ya tiene casi todas las transacciones, el bloque llega como cabecera + IDs cortos de 6 bytes. <a class="srclink" href="explorador.html#f=src/blockencodings.cpp">blockencodings.cpp</a></p></div>
+  <div class="card"><h4>Transporte v2 (BIP324)</h4><p>Cifrado oportunista: un espía no ve qué transacciones envías. <a class="srclink" href="explorador.html#f=src/bip324.cpp">bip324.cpp</a></p></div>
+  <div class="card"><h4>Tor, I2P, CJDNS</h4><p>Redes de anonimato integradas: <a class="srclink" href="explorador.html#f=src/torcontrol.cpp">torcontrol.cpp</a>, <a class="srclink" href="explorador.html#f=src/i2p.cpp">i2p.cpp</a></p></div>
+</div>
+
+<div class="callout"><span class="t">Para auditar la red</span><p>Pregúntate en cada handler de <code>ProcessMessage</code>: ¿qué pasa si el par envía datos enormes, repetidos, desordenados o contradictorios? ¿Hay un límite de memoria y de CPU? ¿Se castiga o se ignora? Los fuzzers de <a class="srclink" href="explorador.html#f=src/test/fuzz/process_message.cpp">src/test/fuzz/process_message.cpp</a> hacen exactamente eso de forma automática.</p></div>
+
+<div class="quiz" data-title="Test del nivel 8"><script type="application/json">[
+{"q":"¿Qué indican los «magic bytes» f9beb4d9?","o":["La versión del software","Que el mensaje es de mainnet y dónde empieza","El tipo de mensaje","La longitud"],"a":1,"why":"pchMessageStart distingue redes y delimita mensajes."},
+{"q":"¿Por qué existe la sincronización de cabeceras en dos fases (PRESYNC/REDOWNLOAD)?","o":["Para ir más rápido","Para que un atacante no llene tu memoria con cabeceras de poca dificultad","Para cifrar","Por compatibilidad"],"a":1,"why":"Sólo se guardan cabeceras de cadenas que superan nMinimumChainWork."},
+{"q":"¿Qué puede hacer un atacante que te «eclipsa» (controla todas tus conexiones)?","o":["Robarte bitcoins con firmas falsas","Ocultarte bloques/transacciones o darte una cadena con menos trabajo","Cambiar las reglas de consenso de tu nodo","Nada"],"a":1,"why":"No puede falsificar firmas ni PoW, pero sí aislarte."},
+{"q":"¿Por qué el nodo protege de la expulsión a pares que le enviaron bloques nuevos?","o":["Por amistad","Porque eso requiere trabajo real que un atacante barato no puede simular","Por azar","No los protege"],"a":1,"why":"Comentarios de SelectNodeToEvict."},
+{"q":"¿Qué capa decide si un bloque es válido?","o":["net.cpp","net_processing.cpp","validation.cpp (consenso)","addrman.cpp"],"a":2,"why":"La red sólo transporta; validation.cpp decide."}
+]</script></div>
+
+    <nav class="prevnext"><a class="prev" href="nivel-7.html"><span>← Anterior</span>Nivel 7 · Estado: el conjunto UTXO, la base de datos y el disco</a><a class="next" href="nivel-9.html"><span>Siguiente →</span>Nivel 9 · Mempool, política y minería</a></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+<script type="module" src="assets/diagrams.js"></script>
+</body>
+</html>

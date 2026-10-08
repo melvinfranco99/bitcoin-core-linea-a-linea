@@ -1,0 +1,109 @@
+<div class="kicker">Nivel 13 · Independencia</div>
+<h1>Cómo auditar Bitcoin Core por tu cuenta</h1>
+<p class="lead">Has recorrido toda la arquitectura. Este nivel te da un método para seguir solo: qué revisar primero, cómo usar las pruebas del propio proyecto como aliadas, cómo detectar cambios peligrosos entre versiones y una lista de comprobación que se guarda en tu navegador.</p>
+
+<div class="callout"><span class="t">Una advertencia honesta</span><p>Nadie (ni un equipo entero) audita casi 300 000 líneas de C++ de una sentada. La seguridad de Bitcoin Core se apoya en <b>muchos ojos independientes</b> durante muchos años. El objetivo realista para ti es: (1) entender y verificar las reglas que protegen tu dinero, (2) comprobar que el binario que ejecutas sale de ese código y (3) revisar con lupa lo que cambia en cada versión. Eso ya te hace independiente de cualquier auditor.</p></div>
+
+<h2>Mapa de prioridades</h2>
+<p>No todo el código es igual de crítico. Si un fallo en esta zona…</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Prioridad</th><th>Archivos</th><th>…podría causar</th><th>Nivel</th></tr></thead>
+<tbody>
+<tr><td><span class="badge cons">1 · Consenso</span></td><td><code>consensus/*</code>, <code>validation.cpp</code> (ConnectBlock, Check*), <code>pow.cpp</code>, <code>script/interpreter.cpp</code>, <code>primitives/*</code>, <code>serialize.h</code>, <code>arith_uint256.cpp</code>, <code>kernel/chainparams.cpp</code>, <code>versionbits.cpp</code>, <code>coins.cpp</code></td><td>Inflación, robo, división de la red</td><td><a href="nivel-3.html">3</a>–<a href="nivel-7.html">7</a>, <a href="nivel-10.html">10</a></td></tr>
+<tr><td><span class="badge cons">1 · Criptografía</span></td><td><code>crypto/sha256*.cpp</code>, <code>crypto/ripemd160.cpp</code>, <code>hash.*</code>, <code>pubkey.cpp</code>, <code>secp256k1/</code></td><td>Firmas falsas aceptadas</td><td><a href="nivel-1.html">1</a>–<a href="nivel-2.html">2</a></td></tr>
+<tr><td><span class="badge pol">2 · Red y antiDoS</span></td><td><code>net.cpp</code>, <code>net_processing.cpp</code>, <code>headerssync.cpp</code>, <code>addrman.cpp</code>, <code>blockencodings.cpp</code></td><td>Caídas remotas, eclipse, aislamiento</td><td><a href="nivel-8.html">8</a></td></tr>
+<tr><td><span class="badge pol">2 · Almacenamiento</span></td><td><code>txdb.cpp</code>, <code>dbwrapper.cpp</code>, <code>node/blockstorage.cpp</code>, <code>leveldb/</code></td><td>Corrupción del estado</td><td><a href="nivel-7.html">7</a></td></tr>
+<tr><td><span class="badge">3 · Política y mempool</span></td><td><code>policy/*</code>, <code>txmempool.cpp</code>, <code>txgraph.cpp</code></td><td>Denegación de servicio, pinning</td><td><a href="nivel-9.html">9</a></td></tr>
+<tr><td><span class="badge">3 · Cartera</span></td><td><code>wallet/*</code>, <code>key.cpp</code>, <code>random.cpp</code>, <code>psbt.cpp</code></td><td>Pérdida de tus fondos (sólo tuyos)</td><td><a href="nivel-11.html">11</a></td></tr>
+<tr><td><span class="badge">4 · Resto</span></td><td><code>rpc/*</code>, <code>init.cpp</code>, <code>qt/*</code>, <code>util/*</code></td><td>Fallos locales, usabilidad</td><td><a href="nivel-12.html">12</a></td></tr>
+</tbody></table></div>
+
+<h2>Las pruebas: una especificación ejecutable</h2>
+<p>El repositorio incluye miles de pruebas. Leerlas es una de las mejores formas de entender qué <i>debería</i> hacer el código, y ejecutarlas, de comprobar que lo hace.</p>
+<div class="grid2">
+  <div class="card"><h4>129 archivos de pruebas unitarias</h4><p><a href="explorador.html#d=src/test"><code>src/test/*_tests.cpp</code></a> (Boost.Test). Ej.: <src file="src/test/script_tests.cpp">script_tests.cpp</src>, <src file="src/test/pow_tests.cpp">pow_tests.cpp</src>.</p><pre class="shell">ctest --test-dir build
+build/bin/test_bitcoin --run_test=pow_tests</pre></div>
+  <div class="card"><h4>~260 pruebas funcionales</h4><p><a href="explorador.html#d=test/functional"><code>test/functional/*.py</code></a>: arrancan nodos reales. <src file="test/functional/feature_block.py">feature_block.py</src> prueba cientos de bloques inválidos.</p><pre class="shell">build/test/functional/test_runner.py
+build/test/functional/feature_block.py</pre></div>
+  <div class="card"><h4>~235 objetivos de fuzzing</h4><p><a href="explorador.html#d=src/test/fuzz"><code>src/test/fuzz/</code></a>: bombardean el código con datos aleatorios (<src file="doc/fuzzing.md">doc/fuzzing.md</src>).</p><pre class="shell">cmake --preset=libfuzzer
+cmake --build build_fuzz
+FUZZ=process_message build_fuzz/bin/fuzz</pre></div>
+  <div class="card"><h4>Vectores de prueba</h4><p><a href="explorador.html#d=src/test/data"><code>src/test/data/</code></a>: <code>tx_valid.json</code>, <code>tx_invalid.json</code>, <code>script_tests.json</code>, <code>sighash.json</code>… casos concretos de qué es válido y qué no. Otras implementaciones de Bitcoin los usan como referencia.</p></div>
+</div>
+<div class="callout info"><span class="t">Truco de auditor: rompe el código a propósito</span><p>Elige una regla (por ejemplo, borra la comprobación <code>bad-txns-inputs-duplicate</code> de <code>tx_check.cpp</code>), recompila y ejecuta las pruebas. Si ninguna prueba falla, has encontrado un hueco en la cobertura. Esta técnica se llama <i>mutation testing</i> y es la forma más directa de comprobar que las pruebas protegen de verdad cada línea.</p></div>
+
+<h2>Revisar una nueva versión</h2>
+<ol class="steps">
+  <li><b>Obtén y verifica</b> la nueva etiqueta (nivel 0): <code>git fetch --tags && git tag -v vX.Y</code>.</li>
+  <li><b>Lee las notas de versión</b> (<code>doc/release-notes*.md</code>) y busca las palabras «consensus», «soft fork», «validation».</li>
+  <li><b>Mide qué cambió</b> en la zona crítica:
+<pre class="shell">git diff --stat v30.0..{{TAG}} -- src/consensus src/script/interpreter.cpp src/validation.cpp \
+   src/pow.cpp src/primitives src/kernel/chainparams.cpp src/versionbits.cpp src/coins.cpp \
+   src/serialize.h src/crypto src/secp256k1 src/arith_uint256.cpp src/pubkey.cpp</pre></li>
+  <li><b>Lee cada cambio</b> con <code>git log -p</code> y busca su pull request en GitHub (el mensaje de fusión lo indica: «Merge bitcoin/bitcoin#NNNNN»). Lee la discusión: ahí está el razonamiento y las objeciones.</li>
+  <li><b>Comprueba los valores fijados</b> que cambian en cada versión: <code>nMinimumChainWork</code>, <code>defaultAssumeValid</code>, <code>m_assumeutxo_data</code> en <src file="src/kernel/chainparams.cpp">chainparams.cpp</src>. Compáralos con tu propio nodo: <code>bitcoin-cli getblockhash &lt;altura&gt;</code> y <code>getblockheader</code> (campo <code>chainwork</code>).</li>
+  <li><b>Ejecuta todas las pruebas</b> y, si puedes, la compilación reproducible Guix y compara tu hash con los de <a href="https://github.com/bitcoin-core/guix.sigs" target="_blank" rel="noopener">guix.sigs</a>.</li>
+</ol>
+
+<h2>Lecciones de los fallos históricos</h2>
+<p>Los fallos graves de la historia de Bitcoin muestran dónde mirar. Todos están corregidos y el arreglo es visible en el código:</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Fallo</th><th>Qué pasó</th><th>Dónde está el arreglo</th><th>Lección</th></tr></thead>
+<tbody>
+<tr><td>CVE-2010-5139</td><td>Desbordamiento de enteros: se crearon 184 000 millones de BTC</td><td><src file="src/consensus/tx_check.cpp" m="see CVE-2010-5139">tx_check.cpp</src></td><td>Comprueba rangos en cada suma</td></tr>
+<tr><td>CVE-2010-5141</td><td>OP_RETURN en el scriptSig permitía gastar cualquier moneda</td><td><src file="src/script/interpreter.cpp" m="see CVE-2010-5141">interpreter.cpp</src></td><td>Aislar lo que controla el atacante</td></tr>
+<tr><td>CVE-2010-5137</td><td>Opcodes que permitían agotar memoria/CPU</td><td><src file="src/script/interpreter.cpp" m="CVE-2010-5137">interpreter.cpp</src></td><td>Limitar recursos</td></tr>
+<tr><td>CVE-2012-2459</td><td>Árbol de Merkle: dos listas de tx con la misma raíz</td><td><src file="src/consensus/merkle.cpp" m="CVE-2012-2459">merkle.cpp</src></td><td>Distinguir «inválido» de «manipulado»</td></tr>
+<tr><td>BIP30 (2010)</td><td>Coinbases duplicadas sobrescribieron monedas</td><td><src file="src/validation.cpp" m="bad-txns-BIP30">validation.cpp</src></td><td>Unicidad de identificadores</td></tr>
+<tr><td>CVE-2017-12842</td><td>Transacciones de 64 bytes confundibles con nodos de Merkle</td><td><src file="src/validation.cpp" m="CVE-2017-12842">validation.cpp</src></td><td>Ambigüedades de tipo</td></tr>
+<tr><td>CVE-2018-17144</td><td>Una optimización quitó la comprobación de entradas duplicadas en bloques</td><td><src file="src/consensus/tx_check.cpp" m="see CVE-2018-17144">tx_check.cpp</src></td><td>Desconfía de las optimizaciones</td></tr>
+<tr><td>Fork de 2013 (BIP50)</td><td>Un cambio de base de datos (BDB → LevelDB) alteró sin querer qué bloques eran válidos</td><td>Por eso las dependencias se fijan en <a href="explorador.html#d=depends">depends/</a></td><td>Las dependencias también son consenso</td></tr>
+</tbody></table></div>
+
+<h2>Preguntas que hacerse ante cualquier línea</h2>
+<div class="grid2">
+  <div class="card"><h4>¿Quién controla este dato?</h4><p>Si viene de la red, asume que es malicioso: ¿se acota su tamaño? ¿se valida antes de usarlo?</p></div>
+  <div class="card"><h4>¿Qué pasa en los extremos?</h4><p>0, negativo, máximo, vacío, duplicado, desordenado, desbordamiento.</p></div>
+  <div class="card"><h4>¿Es determinista?</h4><p>En consenso, el resultado no puede depender del reloj, del sistema operativo, del orden de un mapa ni de la arquitectura.</p></div>
+  <div class="card"><h4>¿Qué pasa si falla a medias?</h4><p>Corte de luz, disco lleno, excepción: ¿queda el estado coherente? (vistas temporales, marca 'H', undo).</p></div>
+  <div class="card"><h4>¿Coincide con el comentario?</h4><p>Los comentarios explican la intención; un desajuste entre comentario y código es una pista.</p></div>
+  <div class="card"><h4>¿Lo cubre una prueba?</h4><p>Busca el nombre de la función en <code>src/test/</code> y <code>test/functional/</code>.</p></div>
+</div>
+
+<h2>Tu lista de comprobación</h2>
+<p>Marca lo que vayas haciendo. Se guarda sólo en este navegador.</p>
+<ul class="checklist" data-key="audit">
+  <li>He clonado el repositorio y verificado la firma de la etiqueta {{TAG}} con <code>git tag -v</code>.</li>
+  <li>He comprobado que <code>git rev-parse HEAD</code> da <code>{{COMMIT}}</code>.</li>
+  <li>He compilado desde el código y ejecutado <code>ctest</code> sin errores.</li>
+  <li>He ejecutado las pruebas funcionales (<code>test_runner.py</code>).</li>
+  <li>He verificado los binarios oficiales con SHA256SUMS y al menos 3 firmas independientes (o he compilado con Guix y comparado hashes).</li>
+  <li>He leído <code>consensus/amount.h</code>, <code>consensus/consensus.h</code> y <code>consensus/tx_check.cpp</code> completos.</li>
+  <li>He leído <code>GetBlockSubsidy</code> y la comprobación <code>bad-cb-amount</code> y entiendo por qué no puede haber más de 21 millones.</li>
+  <li>He reconstruido el bloque génesis y comprobado sus dos hashes.</li>
+  <li>He recorrido <code>CheckBlock</code>, <code>ContextualCheckBlockHeader</code>, <code>ContextualCheckBlock</code> y <code>ConnectBlock</code>.</li>
+  <li>He leído <code>pow.cpp</code> entero y entiendo el ajuste de dificultad.</li>
+  <li>He recorrido <code>VerifyScript</code>, <code>EvalScript</code> y <code>VerifyWitnessProgram</code>.</li>
+  <li>He revisado <code>GetBlockScriptFlags</code> y las alturas de activación en <code>chainparams.cpp</code>.</li>
+  <li>He comparado <code>defaultAssumeValid</code> y <code>nMinimumChainWork</code> con mi propio nodo (o uso <code>-assumevalid=0</code>).</li>
+  <li>He ejecutado <code>bitcoin-cli gettxoutsetinfo</code> y comprobado la oferta total.</li>
+  <li>He hecho una prueba de mutación: he roto una regla a propósito y he visto qué prueba falla.</li>
+  <li>He revisado el <code>git diff --stat</code> de la zona crítica entre la versión anterior y {{TAG}}.</li>
+</ul>
+
+<h2>Recursos primarios</h2>
+<ul>
+  <li><a href="https://github.com/bitcoin/bips" target="_blank" rel="noopener">github.com/bitcoin/bips</a> — las especificaciones (BIP) de cada cambio.</li>
+  <li><a href="https://github.com/bitcoin/bitcoin/pulls" target="_blank" rel="noopener">Pull requests de Bitcoin Core</a> — la revisión pública de cada línea.</li>
+  <li><src file="doc/developer-notes.md">doc/developer-notes.md</src> — convenciones y prácticas del proyecto.</li>
+  <li><src file="SECURITY.md">SECURITY.md</src> — cómo informar si encuentras una vulnerabilidad (de forma privada, no en público).</li>
+  <li><a href="explorador.html">El explorador de esta web</a> — para seguir archivo por archivo.</li>
+</ul>
+
+<div class="quiz" data-title="Test final"><script type="application/json">[
+{"q":"¿Qué zona tiene la máxima prioridad de auditoría?","o":["La interfaz gráfica","El consenso y la criptografía de verificación","El RPC","Los logs"],"a":1,"why":"Un fallo ahí afecta a todos: inflación, robo o división de la red."},
+{"q":"¿Qué es el «mutation testing»?","o":["Probar con mutantes","Romper el código a propósito para comprobar que alguna prueba lo detecta","Cambiar de versión","Fuzzing"],"a":1,"why":"Revela huecos de cobertura."},
+{"q":"¿Qué lección deja el fork de 2013 (BIP50)?","o":["Que LevelDB es mala","Que las dependencias (bases de datos, bibliotecas) también pueden afectar al consenso","Que hay que minar más","Ninguna"],"a":1,"why":"Un cambio de BDB a LevelDB alteró qué bloques se aceptaban."},
+{"q":"¿Qué valores fijados conviene contrastar en cada versión?","o":["Los colores de la GUI","nMinimumChainWork, defaultAssumeValid y assumeutxo","El puerto RPC","El nombre del binario"],"a":1,"why":"Son atajos de rendimiento que afectan a qué se verifica."},
+{"q":"Si encuentras una vulnerabilidad, ¿qué haces?","o":["Publicarla en redes","Seguir SECURITY.md e informar de forma privada","Explotarla","Ignorarla"],"a":1,"why":"Divulgación responsable."}
+]</script></div>

@@ -1,0 +1,123 @@
+<div class="kicker">Nivel 7 · Estado</div>
+<h1>Estado: el conjunto UTXO, la base de datos y el disco</h1>
+<p class="lead">Para validar rápido, el nodo no relee la cadena entera: mantiene un «resumen» de todas las monedas sin gastar (el UTXO, unos 170 millones de monedas) y un índice en memoria de todas las cabeceras. Este nivel explica dónde vive cada cosa y cómo se mantiene coherente incluso si se va la luz.</p>
+
+<h2>¿Qué hay en la carpeta de datos?</h2>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Ruta</th><th>Formato</th><th>Qué guarda</th><th>Código</th></tr></thead>
+<tbody>
+<tr><td><code>blocks/blk00000.dat…</code></td><td>Bloques tal como llegan por la red, ~128 MiB por archivo</td><td>Toda la historia</td><td><src file="src/node/blockstorage.cpp">blockstorage.cpp</src></td></tr>
+<tr><td><code>blocks/rev00000.dat…</code></td><td>Datos de deshacer</td><td>Las monedas que gastó cada bloque</td><td><src file="src/undo.h">undo.h</src></td></tr>
+<tr><td><code>blocks/xor.dat</code></td><td>Clave XOR</td><td>Ofusca los archivos de bloques para que un antivirus no borre datos que «parecen» malware</td><td><src file="src/node/blockstorage.cpp">blockstorage.cpp</src></td></tr>
+<tr><td><code>blocks/index/</code></td><td>LevelDB</td><td>Índice: cabeceras, estado de validez y posición de cada bloque</td><td><src file="src/node/blockstorage.cpp">blockstorage.cpp</src></td></tr>
+<tr><td><code>chainstate/</code></td><td>LevelDB</td><td>El conjunto UTXO</td><td><src file="src/txdb.cpp">txdb.cpp</src></td></tr>
+<tr><td><code>peers.dat</code>, <code>anchors.dat</code></td><td>Propio</td><td>Direcciones de otros nodos</td><td><src file="src/addrdb.cpp">addrdb.cpp</src></td></tr>
+<tr><td><code>mempool.dat</code></td><td>Propio</td><td>La mempool al apagar</td><td><src file="src/node/mempool_persist.cpp">mempool_persist.cpp</src></td></tr>
+</tbody></table></div>
+
+<h2>Una moneda en memoria: Coin</h2>
+<code-ref file="src/coins.h" start="class Coin" end="size_t DynamicMemoryUsage() const {" title="lo que se guarda de cada UTXO">
+  <n m="CTxOut out;">La salida en sí: valor y script.</n>
+  <n m="unsigned int fCoinBase : 1;">1 bit: ¿viene de una coinbase? (para la regla de madurez de 100 bloques).</n>
+  <n m="uint32_t nHeight : 31;">31 bits: altura del bloque que la creó (para madurez y bloqueos relativos). Juntos ocupan 4 bytes.</n>
+  <n m="uint32_t code = nHeight * uint32_t{2} + fCoinBase;">En disco, altura y bit de coinbase se combinan en un solo número…</n>
+  <n m="::Serialize(s, VARINT(code));">…con longitud variable (VARINT), y la salida se comprime (<src file="src/compressor.cpp">compressor.cpp</src>): un P2PKH de 25 bytes se guarda como 21.</n>
+  <n m="return out.IsNull();">Una moneda «gastada» se representa vaciando la salida (valor −1).</n>
+</code-ref>
+
+<h2>Capas de caché: CCoinsView</h2>
+<p>Leer LevelDB del disco para cada moneda sería lentísimo. Por eso hay varias «vistas» apiladas: cada una pregunta a la de abajo sólo si no tiene el dato.</p>
+<pre class="mermaid">
+flowchart TD
+  A["Vista temporal de ConnectBlock<br/>(CCoinsViewCache, se descarta si el bloque es inválido)"] --> B["Caché principal en RAM<br/>(CCoinsViewCache, -dbcache MiB)"]
+  B --> C["CCoinsViewErrorCatcher<br/>(si el disco falla, el nodo se detiene)"]
+  C --> D["CCoinsViewDB<br/>LevelDB en chainstate/"]
+  M["CCoinsViewMemPool<br/>(monedas creadas por la mempool)"] -.-> B
+</pre>
+<code-ref file="src/coins.h" start="class CCoinsView" end="virtual size_t EstimateSize() const { return 0; }" title="la interfaz común">
+  <n m="virtual std::optional<Coin> GetCoin(const COutPoint& outpoint) const;">Dame la moneda txid:n, si existe y no está gastada.</n>
+  <n m="virtual bool HaveCoin(const COutPoint &outpoint) const;">¿Existe sin gastar?</n>
+  <n m="virtual uint256 GetBestBlock() const;">¿A qué bloque corresponde este estado?</n>
+  <n m="virtual std::vector<uint256> GetHeadBlocks() const;">Para recuperarse de un corte de luz a mitad de escritura (ver abajo).</n>
+  <n m="virtual void BatchWrite(">Escribe de golpe muchos cambios en la capa inferior.</n>
+</code-ref>
+<p>Cada entrada de la caché lleva dos banderas que permiten una optimización clave:</p>
+<div class="grid2">
+  <div class="card"><h4>DIRTY</h4><p>Ha cambiado respecto a la capa de abajo: hay que escribirla al volcar.</p></div>
+  <div class="card"><h4>FRESH</h4><p>La capa de abajo no la tiene. Si se gasta antes de volcar, ¡se borra sin tocar el disco! La mayoría de monedas nuevas se gastan pronto, así que esto ahorra muchísimas escrituras.</p></div>
+</div>
+<code-ref file="src/coins.cpp" fn="CCoinsViewCache::FetchCoin" title="buscar con caché">
+  <n m="cacheCoins.try_emplace(outpoint);">Intenta crear una entrada vacía en la caché…</n>
+  <n m="FetchCoinFromBase(outpoint)">…si no estaba, se la pide a la capa de abajo.</n>
+  <n m="cacheCoins.erase(ret);">Si tampoco la tiene, la moneda no existe (o está gastada).</n>
+</code-ref>
+<code-ref file="src/coins.cpp" fn="CCoinsViewCache::AddCoin" title="añadir una moneda">
+  <n m="if (coin.out.scriptPubKey.IsUnspendable()) return;">Las salidas que nunca se podrán gastar (OP_RETURN) ni siquiera se guardan: el UTXO no crece por ellas.</n>
+  <n m="throw std::logic_error(&quot;Attempted to overwrite an unspent coin">Sobrescribir una moneda no gastada sería un error grave de lógica (relacionado con BIP30): el programa se detiene.</n>
+  <n m="fresh = !it->second.IsDirty();">Decide si puede marcarla FRESH. El comentario largo explica el caso delicado de las reorganizaciones.</n>
+  <n m="CCoinsCacheEntry::SetDirty(*it, m_sentinel);">Siempre DIRTY: hay que escribirla.</n>
+</code-ref>
+<code-ref file="src/coins.cpp" fn="CCoinsViewCache::SpendCoin" title="gastar una moneda">
+  <n m="if (it == cacheCoins.end()) return false;">No existe: no se puede gastar.</n>
+  <n m="*moveout = std::move(it->second.coin);">Se entrega la moneda a quien llama (ConnectBlock la guarda en los datos de deshacer).</n>
+  <n m="if (it->second.IsFresh()) {">Si era FRESH, el disco nunca la conoció: basta con borrarla de la caché.</n>
+  <n m="it->second.coin.Clear();">Si no, se marca como gastada y DIRTY para que el borrado llegue al disco.</n>
+</code-ref>
+
+<h2>El UTXO en LevelDB</h2>
+<code-ref file="src/txdb.cpp" lines="27-31" title="prefijos de clave">
+  <n m="DB_COIN{'C'};">Cada moneda se guarda con la clave <code>'C' + txid + VARINT(n)</code> y el valor <code>Coin</code> serializado.</n>
+  <n m="DB_BEST_BLOCK{'B'};">'B': hash del bloque al que corresponde el UTXO.</n>
+  <n m="DB_HEAD_BLOCKS{'H'};">'H': durante una escritura, «estoy pasando del bloque X al Y». Si al arrancar existe, la escritura se interrumpió y el nodo sabe cómo arreglarlo (<code>ReplayBlocks</code>).</n>
+</code-ref>
+<p>Los valores de LevelDB además se <b>ofuscan</b> con una clave aleatoria (<src file="src/dbwrapper.cpp">dbwrapper.cpp</src>) para que datos arbitrarios de la cadena no aparezcan tal cual en tu disco.</p>
+
+<h2>Deshacer: los datos de rev*.dat</h2>
+<code-ref file="src/undo.h" start="class CTxUndo" end="SERIALIZE_METHODS(CBlockUndo">
+  <n m="std::vector<Coin> vprevout;">Por cada transacción, las monedas que gastó (con su altura y si eran coinbase)…</n>
+  <n m="std::vector<CTxUndo> vtxundo; // for all but the coinbase">…y por cada bloque, la lista de todas sus transacciones salvo la coinbase (que no gasta nada). Con esto, <code>DisconnectBlock</code> puede restaurar el UTXO exacto anterior.</n>
+</code-ref>
+<div class="game" data-game="utxo"></div>
+
+<h2>El índice de bloques en memoria</h2>
+<p>Todas las cabeceras conocidas (incluidas las de ramas abandonadas) se guardan en memoria como <code>CBlockIndex</code>, formando un árbol. La cadena activa (<code>CChain</code>) es simplemente un vector de punteros desde el génesis hasta la punta.</p>
+<code-ref file="src/chain.h" start="class CBlockIndex" end="unsigned int nTimeMax{0};" title="un nodo del árbol de bloques">
+  <n m="const uint256* phashBlock{nullptr};">Hash del bloque.</n>
+  <n m="CBlockIndex* pprev{nullptr};">Puntero al padre: así se forma el árbol.</n>
+  <n m="CBlockIndex* pskip{nullptr};">Puntero a un antepasado lejano: permite saltar hacia atrás en O(log n) (<code>GetAncestor</code>).</n>
+  <n m="int nFile GUARDED_BY(::cs_main){0};">En qué archivo blk*.dat está…</n>
+  <n m="unsigned int nDataPos GUARDED_BY(::cs_main){0};">…y en qué posición.</n>
+  <n m="arith_uint256 nChainWork{};">Trabajo total acumulado desde el génesis hasta este bloque: la cifra que decide qué cadena gana.</n>
+  <n m="uint32_t nStatus GUARDED_BY(::cs_main){0};">Nivel de validez alcanzado (cabecera válida, transacciones, scripts…) y banderas (tengo datos, tengo undo, fallido).</n>
+  <n m="int32_t nSequenceId{SEQ_ID_INIT_FROM_DISK};">Orden de llegada: desempata cadenas con el mismo trabajo (gana la que llegó antes).</n>
+</code-ref>
+<code-ref file="src/chain.cpp" fn="GetBitsProof" title="¿cuánto «trabajo» vale un bloque?">
+  <n m="bnTarget.SetCompact(bits, &fNegative, &fOverflow);">Obtiene el objetivo del bloque.</n>
+  <n m="return (~bnTarget / (bnTarget + 1)) + 1;">Trabajo = 2²⁵⁶ / (objetivo + 1): el número esperado de hashes necesarios para encontrar el bloque. Sumado a lo largo de la cadena da <code>nChainWork</code>.</n>
+</code-ref>
+<code-ref file="src/chain.h" start="class CChain" end="CBlockIndex* Next(const CBlockIndex* pindex) const" title="la cadena activa">
+  <n m="std::vector<CBlockIndex*> vChain;">Un simple vector: la posición i es el bloque de altura i.</n>
+  <n m="CBlockIndex* Tip() const">La punta es el último elemento.</n>
+  <n m="return (*this)[pindex->nHeight] == pindex;">¿Está un bloque en la cadena activa? Basta con mirar si en su altura está exactamente él.</n>
+</code-ref>
+
+<h2>Volcado a disco y cortes de luz</h2>
+<p>La caché se vuelca a LevelDB cuando se llena, periódicamente y al apagar (<code>FlushStateToDisk</code> en validation.cpp). Gracias a la marca <code>'H'</code> y a que los bloques están en disco, si el ordenador se apaga de golpe el nodo vuelve a aplicar los bloques que faltaban al arrancar. Por eso cuanta más <code>-dbcache</code> uses, más rápida la sincronización inicial.</p>
+
+<h2>Índices opcionales y assumeutxo</h2>
+<div class="grid2">
+  <div class="card"><h4>txindex</h4><p><code>-txindex</code>: permite buscar cualquier transacción por txid. <src file="src/index/txindex.cpp">index/txindex.cpp</src></p></div>
+  <div class="card"><h4>blockfilterindex</h4><p>Filtros BIP158 para carteras ligeras. <src file="src/index/blockfilterindex.cpp">index/blockfilterindex.cpp</src></p></div>
+  <div class="card"><h4>coinstatsindex</h4><p>Estadísticas y hash del UTXO por bloque (p. ej. para comprobar la oferta total con <code>gettxoutsetinfo</code>). <src file="src/index/coinstatsindex.cpp">index/coinstatsindex.cpp</src></p></div>
+  <div class="card"><h4>Poda (prune)</h4><p><code>-prune</code>: borra bloques antiguos tras validarlos. Sigues validando todo; sólo no guardas la historia.</p></div>
+</div>
+<div class="callout info"><span class="t">assumeutxo</span><p>Permite cargar una instantánea del UTXO a cierta altura (cuyo hash viene fijado en <code>m_assumeutxo_data</code> de chainparams.cpp) y usar el nodo enseguida, mientras <b>en segundo plano</b> se valida desde el génesis. Cuando la validación completa llega a esa altura, se compara el hash: si no coincide, el nodo lo detecta. Es una comodidad, no un atajo de confianza permanente.</p></div>
+<div class="callout"><span class="t">Comprueba tú mismo la oferta total</span><pre class="shell">bitcoin-cli gettxoutsetinfo    <span class="c"># "total_amount": suma de todas las monedas sin gastar</span></pre><p>Tu nodo recorre todo el UTXO y suma. Debe ser menor que lo que permite <code>GetBlockSubsidy</code> hasta la altura actual.</p></div>
+
+<div class="quiz" data-title="Test del nivel 7"><script type="application/json">[
+{"q":"¿Dónde se guarda el conjunto UTXO?","o":["blocks/blk*.dat","chainstate/ (LevelDB) más una caché en RAM","wallet.dat","peers.dat"],"a":1,"why":"CCoinsViewDB sobre LevelDB, con CCoinsViewCache encima."},
+{"q":"¿Qué ventaja da la bandera FRESH?","o":["Ninguna","Si una moneda nueva se gasta antes de volcar, se borra sin escribir nunca en disco","Cifra la moneda","Acelera la red"],"a":1,"why":"SpendCoin: si IsFresh(), simplemente erase."},
+{"q":"¿Se guardan en el UTXO las salidas OP_RETURN?","o":["Sí","No: AddCoin las ignora porque nunca se pueden gastar","Sólo las pequeñas","Sólo en mainnet"],"a":1,"why":"if (coin.out.scriptPubKey.IsUnspendable()) return;"},
+{"q":"¿Qué representa nChainWork?","o":["El número de bloques","El trabajo total (hashes esperados) desde el génesis hasta ese bloque","La dificultad actual","El tamaño en disco"],"a":1,"why":"Suma de GetBlockProof de cada bloque."},
+{"q":"¿Para qué sirve la marca 'H' (DB_HEAD_BLOCKS)?","o":["Para los encabezados HTTP","Para detectar y reparar escrituras interrumpidas del UTXO","Para la cartera","Para los halvings"],"a":1,"why":"Indica una transición en curso; al arrancar se repara."}
+]</script></div>

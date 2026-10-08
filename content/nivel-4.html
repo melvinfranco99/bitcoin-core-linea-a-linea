@@ -1,0 +1,175 @@
+<div class="kicker">Nivel 4 · Lógica de gasto</div>
+<h1>Script: el lenguaje que bloquea las monedas</h1>
+<p class="lead">Cada moneda lleva un pequeño programa-candado (<code>scriptPubKey</code>). Para gastarla hay que aportar datos (<code>scriptSig</code> o testigo) que, al ejecutarse junto con el candado, terminen en «verdadero». El intérprete que ejecuta esto es uno de los archivos más críticos de Bitcoin: <src file="src/script/interpreter.cpp">src/script/interpreter.cpp</src>.</p>
+
+<h2>Una calculadora de pila</h2>
+<p>Script es como una calculadora antigua de notación polaca inversa: lee instrucciones de izquierda a derecha; los <b>datos</b> se apilan y los <b>operadores</b> (opcodes) toman elementos de arriba de la pila y dejan el resultado.</p>
+<div class="analogy">Un montón de platos. «2» pone un plato con un 2. «3» pone otro con un 3. «OP_ADD» quita los dos de arriba, los suma y pone un plato con un 5. «5 OP_EQUAL» compara: si los dos de arriba son iguales, deja «verdadero».</div>
+<p>Script <b>no tiene bucles</b> a propósito: así cualquier programa termina siempre y su coste es predecible. No es «Turing completo», y eso es una característica de seguridad.</p>
+
+<div class="game" data-game="script"></div>
+
+<h2>Los límites del lenguaje</h2>
+<code-ref file="src/script/script.h" lines="27-47" title="límites de consenso">
+  <n m="MAX_SCRIPT_ELEMENT_SIZE = 520;">Ningún dato apilado puede superar 520 bytes.</n>
+  <n m="MAX_OPS_PER_SCRIPT = 201;">Como mucho 201 opcodes «de verdad» por script (los de empujar datos no cuentan).</n>
+  <n m="MAX_PUBKEYS_PER_MULTISIG = 20;">Multifirma clásica: hasta 20 claves.</n>
+  <n m="MAX_SCRIPT_SIZE = 10000;">Un script no puede pasar de 10 000 bytes.</n>
+  <n m="MAX_STACK_SIZE = 1000;">Pila + pila alternativa: máximo 1000 elementos.</n>
+  <n m="LOCKTIME_THRESHOLD = 500000000;">El umbral entre «altura» y «fecha» para los bloqueos de tiempo (visto en el nivel 3).</n>
+</code-ref>
+
+<h2>El bucle principal: EvalScript</h2>
+<p>Esta función recorre el script instrucción a instrucción. Es larga (unas 830 líneas) pero muy regular: un gran <code>switch</code> con un <code>case</code> por opcode. Primero, la preparación y la lectura de cada instrucción:</p>
+<code-ref file="src/script/interpreter.cpp" start="bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& script, script_verify_flags flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptExecutionData& execdata" end="switch (opcode)" title="inicio de EvalScript">
+  <n m="static const valtype vchFalse(0);">«Falso» es un vector vacío; «verdadero» es el byte 1.</n>
+  <n m="assert(sigversion == SigVersion::BASE">Hay tres «sabores» de ejecución: BASE (scripts clásicos), WITNESS_V0 (SegWit) y TAPSCRIPT (Taproot). Algunas reglas cambian según el sabor.</n>
+  <n m="CScript::const_iterator pc = script.begin();"><code>pc</code> («program counter») apunta a la instrucción actual.</n>
+  <n m="ConditionStack vfExec;"><code>vfExec</code> recuerda, para cada IF abierto, si estamos en una rama que se ejecuta o que se salta.</n>
+  <n m="std::vector<valtype> altstack;">Una segunda pila auxiliar.</n>
+  <n m="script.size() > MAX_SCRIPT_SIZE">Primer límite: tamaño del script.</n>
+  <n m="bool fExec = vfExec.all_true();">¿Estamos en una rama activa? Sólo si todos los IF abiertos son verdaderos.</n>
+  <n m="if (!script.GetOp(pc, opcode, vchPushValue))">Lee la siguiente instrucción. Si el script está cortado a mitad de un dato, error.</n>
+  <n m="if (vchPushValue.size() > MAX_SCRIPT_ELEMENT_SIZE)">Límite de 520 bytes por elemento.</n>
+  <n m="++nOpCount > MAX_OPS_PER_SCRIPT">Cuenta opcodes (en scripts no Taproot).</n>
+  <n m="opcode == OP_CAT ||">Estos opcodes están <b>desactivados</b> desde 2010 (CVE-2010-5137): Satoshi los quitó porque algunos permitían ataques de denegación de servicio (p. ej. OP_CAT o OP_MUL creando datos gigantes). Aparecer en una rama ejecutada <i>o no</i> invalida el script.</n>
+  <n m="if (fExec && 0 <= opcode && opcode <= OP_PUSHDATA4)">Si es un dato y estamos en rama activa, se apila (exigiendo la codificación mínima si la bandera MINIMALDATA está activa).</n>
+  <n m="else if (fExec || (OP_IF <= opcode && opcode <= OP_ENDIF))">Los opcodes sólo se ejecutan en ramas activas… salvo IF/ELSE/ENDIF, que siempre hay que procesar para saber dónde termina cada rama.</n>
+</code-ref>
+
+<h3>Control de flujo: IF / ELSE / ENDIF / VERIFY / RETURN</h3>
+<code-ref file="src/script/interpreter.cpp" start="case OP_IF:" end="return set_error(serror, SCRIPT_ERR_OP_RETURN);" title="control de flujo">
+  <n m="if (fExec)">Si estamos dentro de una rama saltada, el IF no consume nada: sólo apila «falso» para que su rama también se salte.</n>
+  <n m="if (sigversion == SigVersion::TAPSCRIPT) {">En Tapscript, el valor del IF debe ser exactamente vacío o exactamente <code>01</code> (regla de consenso). Evita que alguien cambie la transacción usando otra representación de «verdadero» (maleabilidad).</n>
+  <n m="if (sigversion == SigVersion::WITNESS_V0 && (flags & SCRIPT_VERIFY_MINIMALIF))">En SegWit v0 esa misma regla es sólo de política (la aplica tu mempool, no el consenso).</n>
+  <n m="fValue = CastToBool(vch);">Convierte el dato a booleano (ver abajo).</n>
+  <n m="vfExec.push_back(fValue);">Recuerda si esta rama se ejecuta.</n>
+  <n m="vfExec.toggle_top();">ELSE invierte la rama actual.</n>
+  <n m="vfExec.pop_back();">ENDIF la cierra.</n>
+  <n m="return set_error(serror, SCRIPT_ERR_VERIFY);">VERIFY: si la cima no es verdadera, el script falla en el acto.</n>
+  <n m="return set_error(serror, SCRIPT_ERR_OP_RETURN);">OP_RETURN hace fallar siempre. Por eso las salidas que empiezan por OP_RETURN son imposibles de gastar y se usan para guardar datos.</n>
+</code-ref>
+<code-ref file="src/script/interpreter.cpp" fn="CastToBool" title="¿qué es «verdadero»?">
+  <n m="if (vch[i] != 0)">Cualquier byte distinto de cero hace que sea verdadero…</n>
+  <n m="vch[i] == 0x80">…salvo el «cero negativo»: todo ceros y un 0x80 final (en Script los números usan el bit alto del último byte como signo).</n>
+</code-ref>
+
+<h3>Opcodes de pila y comparación</h3>
+<code-ref file="src/script/interpreter.cpp" start="case OP_DUP:" end="break;" title="OP_DUP">
+  <n m="if (stack.size() < 1)">Casi todos los opcodes empiezan igual: comprobar que hay suficientes elementos. Si no, error (nunca leer memoria que no existe).</n>
+  <n m="stack.push_back(vch);">Copia la cima y la apila.</n>
+</code-ref>
+<code-ref file="src/script/interpreter.cpp" start="case OP_EQUAL:" end="return set_error(serror, SCRIPT_ERR_EQUALVERIFY);" title="OP_EQUAL y OP_EQUALVERIFY">
+  <n m="bool fEqual = (vch1 == vch2);">Comparación <b>byte a byte</b>, no numérica.</n>
+  <n m="OP_NOTEQUAL is disabled">Comentario histórico de Satoshi: no hay OP_NOTEQUAL porque <code>01</code> y <code>0100</code> son el mismo número pero bytes distintos; un listillo podría aprovecharlo.</n>
+  <n m="stack.push_back(fEqual ? vchTrue : vchFalse);">Deja verdadero o falso…</n>
+  <n m="if (opcode == OP_EQUALVERIFY)">…y la versión VERIFY además exige que sea verdadero.</n>
+</code-ref>
+
+<h3>Opcodes criptográficos</h3>
+<code-ref file="src/script/interpreter.cpp" start="case OP_RIPEMD160:" end="break;" title="hashes">
+  <n m="valtype vchHash(">El resultado mide 20 bytes (RIPEMD160, SHA1, HASH160) o 32 (SHA256, HASH256).</n>
+  <n m="CHash160().Write(vch).Finalize(vchHash);">OP_HASH160 = RIPEMD160(SHA256(x)): lo que se usa en direcciones 1… y bc1q….</n>
+  <n m="popstack(stack);">Quita el dato original y apila su hash.</n>
+</code-ref>
+<code-ref file="src/script/interpreter.cpp" start="case OP_CHECKSIG:" end="case OP_CHECKSIGADD:" title="OP_CHECKSIG">
+  <n m="valtype& vchSig    = stacktop(-2);">El penúltimo elemento es la firma…</n>
+  <n m="valtype& vchPubKey = stacktop(-1);">…y la cima, la clave pública.</n>
+  <n m="EvalChecksig(">Verifica: comprueba la codificación, calcula <b>qué</b> se firmó (el «sighash», abajo) y llama a libsecp256k1. Si la firma está mal codificada devuelve error; si es simplemente incorrecta, <code>fSuccess</code> = falso.</n>
+  <n m="stack.push_back(fSuccess ? vchTrue : vchFalse);">Resultado a la pila.</n>
+</code-ref>
+<code-ref file="src/script/interpreter.cpp" fn="EvalChecksigPreTapscript" title="comprobación de firma (scripts clásicos y SegWit v0)">
+  <n m="CScript scriptCode(pbegincodehash, pend);">El «scriptCode» es la parte del script que la firma cubre.</n>
+  <n m="FindAndDelete(scriptCode, CScript() << vchSig);">Rareza histórica: en scripts antiguos se borra la propia firma del scriptCode antes de verificar (una firma no puede firmarse a sí misma). SegWit eliminó esta peculiaridad.</n>
+  <n m="!CheckSignatureEncoding(vchSig, flags, serror)">Codificación estricta DER (BIP66) y tipo de sighash válido.</n>
+  <n m="checker.CheckECDSASignature">Aquí se calcula el sighash y se verifica con secp256k1.</n>
+  <n m="SCRIPT_VERIFY_NULLFAIL">Si la firma falla, debe estar vacía (si no, se podrían meter firmas basura sin consecuencias = maleabilidad).</n>
+</code-ref>
+
+<h3>El final de EvalScript</h3>
+<code-ref file="src/script/interpreter.cpp" after="case OP_CHECKSIGADD:" start="// Size limits" end="return set_success(serror);">
+  <n m="stack.size() + altstack.size() > MAX_STACK_SIZE">Tras cada instrucción, límite de 1000 elementos.</n>
+  <n m="catch (const scriptnum_error&)">Los números de Script están limitados a 4 bytes; si una operación aritmética recibe algo más largo, lanza una excepción que aquí se convierte en error.</n>
+  <n m="if (!vfExec.empty())">Un IF sin su ENDIF invalida el script.</n>
+</code-ref>
+
+<h2>¿Qué se firma exactamente? El «sighash»</h2>
+<p>Una firma no firma «la transacción» tal cual (contiene las propias firmas…), sino un resumen calculado con reglas precisas. El último byte de la firma indica qué partes se cubren:</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Tipo</th><th>Valor</th><th>Significa</th></tr></thead>
+<tbody>
+<tr><td><code>SIGHASH_ALL</code></td><td>0x01</td><td>Firmo todas las entradas y todas las salidas (lo normal).</td></tr>
+<tr><td><code>SIGHASH_NONE</code></td><td>0x02</td><td>Firmo las entradas, pero las salidas pueden cambiar («me da igual adónde vaya»).</td></tr>
+<tr><td><code>SIGHASH_SINGLE</code></td><td>0x03</td><td>Firmo sólo la salida con mi mismo índice.</td></tr>
+<tr><td><code>| ANYONECANPAY</code></td><td>0x80</td><td>Sólo firmo mi entrada: otros pueden añadir entradas (útil para colectas).</td></tr>
+<tr><td><code>SIGHASH_DEFAULT</code></td><td>0x00</td><td>Sólo Taproot: equivale a ALL y ahorra un byte.</td></tr>
+</tbody></table></div>
+<code-ref file="src/script/interpreter.cpp" start="uint256 SignatureHash(const CScript& scriptCode, const T& txTo" end="ss << txTo.nLockTime;" title="sighash de SegWit v0 (BIP143)">
+  <n m="return uint256::ONE;">El famoso bug de SIGHASH_SINGLE en scripts antiguos: si no hay salida con ese índice, se «firma» el número 1. Se mantiene porque cambiarlo sería un hard fork.</n>
+  <n m="if (sigversion == SigVersion::WITNESS_V0) {">SegWit v0 (BIP143) rediseñó el cálculo para que fuera lineal (el antiguo era cuadrático: una transacción grande podía tardar minutos en verificarse).</n>
+  <n m="hashPrevouts = cacheready">Hash de todas las monedas gastadas (salvo ANYONECANPAY). Se calcula una vez y se reutiliza para todas las entradas.</n>
+  <n m="ss << amount;">Novedad importante: se firma el <b>valor</b> de la moneda gastada. Así una cartera sin conexión (hardware) sabe cuánto está gastando.</n>
+  <n m="ss << hashOutputs;">Hash de las salidas, según el tipo de sighash.</n>
+</code-ref>
+
+<h2>De script a script: VerifyScript</h2>
+<p>Esta es la función que llama la validación para cada entrada. Junta el desbloqueo y el candado y aplica las reglas especiales de P2SH y SegWit.</p>
+<pre class="mermaid">
+flowchart TD
+  A["EvalScript(scriptSig)"] --> B["EvalScript(scriptPubKey)<br/>sobre la MISMA pila"]
+  B --> C{"¿cima verdadera?"}
+  C -- no --> X["✘ EVAL_FALSE"]
+  C -- sí --> D{"¿scriptPubKey es<br/>programa de testigo?<br/>(OP_0/OP_1 + 20/32 bytes)"}
+  D -- sí --> W["VerifyWitnessProgram<br/>P2WPKH / P2WSH / Taproot"]
+  D -- no --> E{"¿es P2SH?<br/>OP_HASH160 h OP_EQUAL"}
+  E -- sí --> F["Ejecuta el redeemScript<br/>(último dato del scriptSig)"]
+  E -- no --> OK["✔ válido"]
+  F --> G{"¿redeemScript es<br/>programa de testigo?"}
+  G -- sí --> W
+  G -- no --> OK
+  W --> OK
+</pre>
+<code-ref file="src/script/interpreter.cpp" fn="VerifyScript" title="verificar una entrada completa">
+  <n m="SCRIPT_VERIFY_SIGPUSHONLY">Política: el scriptSig sólo debería contener datos, no opcodes.</n>
+  <n m="see CVE-2010-5141">Agujero de julio de 2010: se concatenaban scriptSig y scriptPubKey en un solo script. Con un scriptSig «OP_1 OP_RETURN» (en aquella época OP_RETURN terminaba con éxito) cualquiera podía gastar cualquier moneda. Ahora se ejecutan por separado, compartiendo sólo la pila.</n>
+  <n m="if (!EvalScript(stack, scriptSig">Primero el desbloqueo…</n>
+  <n m="stackCopy = stack;">(se guarda una copia de la pila para P2SH)</n>
+  <n m="if (!EvalScript(stack, scriptPubKey">…después el candado, sobre la pila resultante.</n>
+  <n m="if (CastToBool(stack.back()) == false)">Al final, la cima debe ser verdadera.</n>
+  <n m="scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)">SegWit nativo: el candado es «versión + programa».</n>
+  <n m="if (scriptSig.size() != 0)">En SegWit nativo el scriptSig debe estar vacío: todo va en el testigo.</n>
+  <n m="scriptPubKey.IsPayToScriptHash()">P2SH (BIP16): el candado sólo contiene el hash de un script; el que gasta revela el script completo («redeemScript») y se ejecuta.</n>
+  <n m="swap(stack, stackCopy);">Se recupera la pila tal y como la dejó el scriptSig.</n>
+  <n m="CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());">El último dato apilado es el redeemScript…</n>
+  <n m="if (!EvalScript(stack, pubKey2">…y se ejecuta con el resto de la pila.</n>
+</code-ref>
+
+<h2>SegWit y Taproot: VerifyWitnessProgram</h2>
+<code-ref file="src/script/interpreter.cpp" fn="VerifyWitnessProgram" title="los programas de testigo">
+  <n m="if (program.size() == WITNESS_V0_SCRIPTHASH_SIZE) {">P2WSH: el programa (32 bytes) es el SHA-256 de un script.</n>
+  <n m="const valtype& script_bytes = SpanPopBack(stack);">El último elemento del testigo es el script…</n>
+  <n m="if (memcmp(hash_exec_script.begin(), program.data(), 32))">…cuyo hash debe coincidir con el programa.</n>
+  <n m="} else if (program.size() == WITNESS_V0_KEYHASH_SIZE) {">P2WPKH: el programa (20 bytes) es un HASH160 de clave.</n>
+  <n m="exec_script << OP_DUP << OP_HASH160 << program << OP_EQUALVERIFY << OP_CHECKSIG;">¡Se fabrica al vuelo el script P2PKH clásico! Por eso P2WPKH se comporta como P2PKH pero con la firma en el testigo.</n>
+  <n m="} else if (witversion == 1 && program.size() == WITNESS_V1_TAPROOT_SIZE && !is_p2sh) {">Taproot (versión 1, 32 bytes): el programa es una clave pública «retocada».</n>
+  <n m="stack.back()[0] == ANNEX_TAG">El «anexo» (byte 0x50): reservado para el futuro.</n>
+  <n m="if (stack.size() == 1) {">Gasto por <b>clave</b>: un único elemento, una firma Schnorr. Es lo más común y más privado: nadie ve si había scripts alternativos.</n>
+  <n m="const valtype& control = SpanPopBack(stack);">Gasto por <b>script</b>: se revela un script concreto y un «bloque de control» con la prueba de Merkle de que ese script estaba comprometido en la clave.</n>
+  <n m="VerifyTaprootCommitment">Comprueba esa prueba: clave interna + camino de Merkle → debe dar exactamente el programa.</n>
+  <n m="SigVersion::TAPSCRIPT">Ejecuta el script con las reglas de Tapscript (BIP342).</n>
+  <n m="return set_success(serror);">Versiones de hoja desconocidas: éxito. Reservadas para futuros soft forks.</n>
+  <n m="Other version/size/p2sh combinations return true for future softfork compatibility">Versiones de testigo 2–16 desconocidas: <b>cualquiera puede gastarlas</b> según las reglas actuales. Así un futuro soft fork puede darles significado sin romper nodos antiguos (nivel 10).</n>
+</code-ref>
+
+<h2>Todos los opcodes</h2>
+<p>Tabla generada automáticamente desde <code>script.h</code>, con la línea exacta donde <code>interpreter.cpp</code> implementa cada uno.</p>
+<div class="table-wrap tall"><auto-table kind="opcodes"/></div>
+
+<div class="quiz" data-title="Test del nivel 4"><script type="application/json">[
+{"q":"Al terminar de ejecutar los scripts, ¿cuándo es válido el gasto?","o":["Si la pila está vacía","Si la cima de la pila es «verdadera» (y no hubo errores)","Si se ejecutaron todos los opcodes","Si hay una firma en la pila"],"a":1,"why":"VerifyScript: CastToBool(stack.back())."},
+{"q":"¿Por qué Script no tiene bucles?","o":["Por olvido","Para que todo programa termine y su coste sea predecible","Porque C++ no lo permite","Los tiene, ocultos"],"a":1,"why":"Evita ataques de denegación de servicio y hace el análisis sencillo."},
+{"q":"¿Qué arregló ejecutar scriptSig y scriptPubKey por separado?","o":["CVE-2010-5141: cualquiera podía gastar cualquier moneda","El bug de SIGHASH_SINGLE","La maleabilidad de SegWit","Nada"],"a":0,"why":"Antes se concatenaban y un scriptSig con OP_RETURN saltaba el candado."},
+{"q":"En P2WPKH, ¿qué script se ejecuta?","o":["Ninguno","Uno P2PKH clásico fabricado al vuelo con el programa de 20 bytes","El que diga el testigo","Un script Taproot"],"a":1,"why":"exec_script << OP_DUP << OP_HASH160 << program << OP_EQUALVERIFY << OP_CHECKSIG."},
+{"q":"¿Qué ocurre hoy con una salida de testigo versión 2?","o":["Es inválida","La puede gastar cualquiera (reservada para futuros soft forks); la política no la retransmite","Sólo la pueden gastar mineros","Equivale a Taproot"],"a":1,"why":"Versiones desconocidas devuelven true por compatibilidad futura."},
+{"q":"¿Qué novedad de BIP143 protege a carteras hardware?","o":["Firmar el valor de la moneda gastada","Firmas más cortas","Direcciones bech32","El anexo"],"a":0,"why":"ss << amount: la firma compromete el valor de la entrada."}
+]</script></div>

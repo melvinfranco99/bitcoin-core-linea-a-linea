@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nivel 10 · Cómo cambian las reglas: soft forks y despliegues · Bitcoin Core, línea a línea</title>
+<meta name="description" content="Explicación sencilla, por niveles y con juegos interactivos de todo el código fuente de Bitcoin Core v31.1, para auditarlo uno mismo.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23f7931a'/%3E%3Ctext x='32' y='44' font-size='36' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'%3E₿%3C/text%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body data-page="nivel-10">
+<header class="topbar">
+  <button class="menu-btn" aria-label="Abrir menú" type="button">☰</button>
+  <a class="brand" href="index.html"><span class="logo">₿</span> Bitcoin Core, <em>línea a línea</em></a>
+  <span class="pin" title="Todo el código citado procede de este commit exacto">v31.1 · <code>9be056a8a72b</code></span>
+  <button class="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav><ol class="levels"><li><a href="index.html">Inicio</a></li>
+<li><a href="nivel-0.html">0 · No confíes, verifica</a></li>
+<li><a href="nivel-1.html">1 · Bytes y hashes</a></li>
+<li><a href="nivel-2.html">2 · Claves y firmas</a></li>
+<li><a href="nivel-3.html">3 · Transacciones</a></li>
+<li><a href="nivel-4.html">4 · Script</a></li>
+<li><a href="nivel-5.html">5 · Bloques y PoW</a></li>
+<li><a href="nivel-6.html">6 · Validación</a></li>
+<li><a href="nivel-7.html">7 · UTXO y disco</a></li>
+<li><a href="nivel-8.html">8 · Red P2P</a></li>
+<li><a href="nivel-9.html">9 · Mempool y minería</a></li>
+<li><a href="nivel-10.html" class="active">10 · Soft forks</a></li>
+<li><a href="nivel-11.html">11 · Wallet</a></li>
+<li><a href="nivel-12.html">12 · Arranque y RPC</a></li>
+<li><a href="nivel-13.html">13 · Auditar</a></li>
+<li><a href="explorador.html">Explorador de código</a></li>
+<li><a href="glosario.html">Glosario</a></li></ol></nav>
+    <div class="progress-box"><div class="muted small">Tu progreso</div><div class="progress"><div class="bar"></div></div><div class="small progress-label"></div></div>
+  </aside>
+  <main class="content" id="main">
+    <div class="kicker">Nivel 10 · Evolución</div>
+<h1>Cómo cambian las reglas: soft forks y despliegues</h1>
+<p class="lead">Bitcoin ha añadido funciones (P2SH, bloqueos de tiempo, SegWit, Taproot) sin obligar a nadie a actualizar a la vez. El truco es el <b>soft fork</b>: hacer las reglas <i>más estrictas</i>, nunca más laxas. Este nivel te enseña a reconocer en el código cada cambio de reglas, que es justo lo que más importa vigilar como auditor.</p>
+
+<h2>Soft fork frente a hard fork</h2>
+<div class="grid2">
+  <div class="card"><h4>Soft fork (más estricto)</h4><p>Lo que antes era válido puede pasar a ser inválido. Los bloques de los nodos nuevos siguen siendo válidos para los viejos. Ejemplo: SegWit hizo que las salidas <code>OP_0 &lt;20 bytes&gt;</code>, que antes «cualquiera podía gastar», exijan una firma.</p></div>
+  <div class="card"><h4>Hard fork (más laxo)</h4><p>Algo antes inválido pasa a ser válido (p. ej. bloques más grandes). Los nodos viejos rechazan los bloques nuevos y la red se parte. Bitcoin Core nunca ha desplegado uno intencionadamente.</p></div>
+</div>
+<div class="analogy">Un club dice «se admite a mayores de 18». Si el club nuevo dice «mayores de 21» (soft fork), todos los que entran al nuevo también cumplen la regla antigua. Si dijera «mayores de 16» (hard fork), el portero antiguo echaría a algunos.</div>
+<p>Por eso el código deja «huecos» preparados para el futuro: opcodes <code>OP_NOP1…10</code>, versiones de testigo 2–16, versiones de hoja Taproot y <code>OP_SUCCESSx</code>. Hoy significan «válido»; un soft fork puede darles reglas.</p>
+
+<h2>Historial de soft forks en el código</h2>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Cambio</th><th>BIP</th><th>Año</th><th>Cómo se activa hoy en el código</th></tr></thead>
+<tbody>
+<tr><td>P2SH</td><td>16</td><td>2012</td><td>Siempre activo (salvo un bloque histórico, <code>script_flag_exceptions</code>)</td></tr>
+<tr><td>Altura en coinbase</td><td>34</td><td>2013</td><td>Enterrado: <code>BIP34Height = 227931</code></td></tr>
+<tr><td>Firmas DER estrictas</td><td>66</td><td>2015</td><td>Enterrado: <code>BIP66Height = 363725</code></td></tr>
+<tr><td>CHECKLOCKTIMEVERIFY</td><td>65</td><td>2015</td><td>Enterrado: <code>BIP65Height = 388381</code></td></tr>
+<tr><td>CSV, bloqueos relativos, MTP</td><td>68/112/113</td><td>2016</td><td>Enterrado: <code>CSVHeight = 419328</code></td></tr>
+<tr><td>SegWit (+ NULLDUMMY)</td><td>141/143/147</td><td>2017</td><td>Enterrado: <code>SegwitHeight = 481824</code></td></tr>
+<tr><td>Taproot, Schnorr, Tapscript</td><td>340/341/342</td><td>2021</td><td>Siempre activo (salvo un bloque histórico); el despliegue BIP9 se conserva en chainparams</td></tr>
+</tbody></table></div>
+<div class="callout info"><span class="t">«Enterrado» (buried)</span><p>Cuando un soft fork lleva años activo, se sustituye su mecanismo de activación por una simple altura fija (BIP90). Es más sencillo y no cambia nada para la cadena real: el código es más fácil de auditar.</p></div>
+<figure class="cref" id="c1" data-start="24" data-file="src/consensus/params.h"><figcaption><span class="cref-file">src/consensus/params.h</span><span class="cref-lines">líneas 24–38</span><span class="cref-title">los dos tipos de despliegue</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/consensus/params.h#L24-L38" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/consensus/params.h&amp;l=24" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">enum BuriedDeployment : int16_t {
+    // buried deployments get negative values to avoid overlap with DeploymentPos
+    DEPLOYMENT_HEIGHTINCB = std::numeric_limits&lt;int16_t&gt;::min(),
+    DEPLOYMENT_CLTV,
+    DEPLOYMENT_DERSIG,
+    DEPLOYMENT_CSV,
+    DEPLOYMENT_SEGWIT,
+};
+constexpr bool ValidDeployment(BuriedDeployment dep) { return dep &lt;= DEPLOYMENT_SEGWIT; }
+
+enum DeploymentPos : uint16_t {
+    DEPLOYMENT_TESTDUMMY,
+    DEPLOYMENT_TAPROOT, // Deployment of Schnorr/Taproot (BIPs 340-342)
+    // NOTE: Also add new deployments to VersionBitsDeploymentInfo in deploymentinfo.cpp
+    MAX_VERSION_BITS_DEPLOYMENTS</code></pre><script type="application/json" class="cref-notes">[{"line": 26, "html": "Despliegues enterrados: BIP34, CLTV, DERSIG, CSV, SegWit. Se activan por altura."}, {"line": 35, "html": "Despliegues por señalización BIP9 (versionbits): uno de prueba…"}, {"line": 36, "html": "…y Taproot."}]</script></figure>
+
+<h2>BIP9: los mineros señalizan</h2>
+<p>Para activar un soft fork nuevo, los mineros marcan un bit de <code>nVersion</code> en sus bloques. Si en un período de 2016 bloques al menos el 90 % (1815) lo marcan, queda «bloqueado» y se activa en el siguiente período (o a partir de <code>min_activation_height</code>, el mecanismo «Speedy Trial» usado con Taproot).</p>
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> DEFINED
+  DEFINED --> STARTED: mediana de tiempo ≥ inicio
+  STARTED --> LOCKED_IN: ≥ 1815 de 2016 señalizan
+  STARTED --> FAILED: mediana de tiempo ≥ timeout
+  LOCKED_IN --> ACTIVE: altura ≥ min_activation_height
+  ACTIVE --> [*]
+  FAILED --> [*]
+</pre>
+<figure class="cref" id="c2" data-start="26" data-file="src/versionbits.cpp"><figcaption><span class="cref-file">src/versionbits.cpp</span><span class="cref-lines">líneas 26–117</span><span class="cref-title">la máquina de estados</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/versionbits.cpp#L26-L117" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/versionbits.cpp&amp;l=26" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">ThresholdState AbstractThresholdConditionChecker::GetStateFor(const CBlockIndex* pindexPrev, ThresholdConditionCache&amp; cache) const
+{
+    int nPeriod = Period();
+    int nThreshold = Threshold();
+    int min_activation_height = MinActivationHeight();
+    int64_t nTimeStart = BeginTime();
+    int64_t nTimeTimeout = EndTime();
+
+    // Check if this deployment is always active.
+    if (nTimeStart == Consensus::BIP9Deployment::ALWAYS_ACTIVE) {
+        return ThresholdState::ACTIVE;
+    }
+
+    // Check if this deployment is never active.
+    if (nTimeStart == Consensus::BIP9Deployment::NEVER_ACTIVE) {
+        return ThresholdState::FAILED;
+    }
+
+    // A block&#x27;s state is always the same as that of the first of its period, so it is computed based on a pindexPrev whose height equals a multiple of nPeriod - 1.
+    if (pindexPrev != nullptr) {
+        pindexPrev = pindexPrev-&gt;GetAncestor(pindexPrev-&gt;nHeight - ((pindexPrev-&gt;nHeight + 1) % nPeriod));
+    }
+
+    // Walk backwards in steps of nPeriod to find a pindexPrev whose information is known
+    std::vector&lt;const CBlockIndex*&gt; vToCompute;
+    while (!cache.contains(pindexPrev)) {
+        if (pindexPrev == nullptr) {
+            // The genesis block is by definition defined.
+            cache[pindexPrev] = ThresholdState::DEFINED;
+            break;
+        }
+        if (pindexPrev-&gt;GetMedianTimePast() &lt; nTimeStart) {
+            // Optimization: don&#x27;t recompute down further, as we know every earlier block will be before the start time
+            cache[pindexPrev] = ThresholdState::DEFINED;
+            break;
+        }
+        vToCompute.push_back(pindexPrev);
+        pindexPrev = pindexPrev-&gt;GetAncestor(pindexPrev-&gt;nHeight - nPeriod);
+    }
+
+    // At this point, cache[pindexPrev] is known
+    assert(cache.contains(pindexPrev));
+    ThresholdState state = cache[pindexPrev];
+
+    // Now walk forward and compute the state of descendants of pindexPrev
+    while (!vToCompute.empty()) {
+        ThresholdState stateNext = state;
+        pindexPrev = vToCompute.back();
+        vToCompute.pop_back();
+
+        switch (state) {
+            case ThresholdState::DEFINED: {
+                if (pindexPrev-&gt;GetMedianTimePast() &gt;= nTimeStart) {
+                    stateNext = ThresholdState::STARTED;
+                }
+                break;
+            }
+            case ThresholdState::STARTED: {
+                // We need to count
+                const CBlockIndex* pindexCount = pindexPrev;
+                int count = 0;
+                for (int i = 0; i &lt; nPeriod; i++) {
+                    if (Condition(pindexCount)) {
+                        count++;
+                    }
+                    pindexCount = pindexCount-&gt;pprev;
+                }
+                if (count &gt;= nThreshold) {
+                    stateNext = ThresholdState::LOCKED_IN;
+                } else if (pindexPrev-&gt;GetMedianTimePast() &gt;= nTimeTimeout) {
+                    stateNext = ThresholdState::FAILED;
+                }
+                break;
+            }
+            case ThresholdState::LOCKED_IN: {
+                // Progresses into ACTIVE provided activation height will have been reached.
+                if (pindexPrev-&gt;nHeight + 1 &gt;= min_activation_height) {
+                    stateNext = ThresholdState::ACTIVE;
+                }
+                break;
+            }
+            case ThresholdState::FAILED:
+            case ThresholdState::ACTIVE: {
+                // Nothing happens, these are terminal states.
+                break;
+            }
+        }
+        cache[pindexPrev] = state = stateNext;
+    }
+
+    return state;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 35, "html": "Atajos para redes de prueba: siempre activo…"}, {"line": 40, "html": "…o nunca."}, {"line": 46, "html": "El estado sólo cambia en los límites de período: todos los bloques de un período comparten estado."}, {"line": 51, "html": "Retrocede período a período hasta encontrar uno cuyo estado ya conozca (caché)."}, {"line": 77, "html": "DEFINED → STARTED cuando la mediana de tiempo alcanza la fecha de inicio."}, {"line": 88, "html": "Cuenta los bloques del período que señalizan el bit."}, {"line": 93, "html": "Si se alcanza el umbral, LOCKED_IN…"}, {"line": 95, "html": "…si no, y se acabó el plazo, FAILED."}, {"line": 102, "html": "LOCKED_IN → ACTIVE al llegar a la altura mínima."}, {"line": 109, "html": "ACTIVE y FAILED son definitivos."}]</script></figure>
+<div class="game" data-game="bip9"></div>
+<figure class="cref" id="c3" data-start="109" data-file="src/kernel/chainparams.cpp"><figcaption><span class="cref-file">src/kernel/chainparams.cpp</span><span class="cref-lines">líneas 109–115</span><span class="cref-title">los parámetros reales de Taproot</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/kernel/chainparams.cpp#L109-L115" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/kernel/chainparams.cpp&amp;l=109" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">        // Deployment of Taproot (BIPs 340-342)
+        consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].bit = 2;
+        consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].nStartTime = 1619222400; // April 24th, 2021
+        consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].nTimeout = 1628640000; // August 11th, 2021
+        consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].min_activation_height = 709632; // Approximately November 12th, 2021
+        consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].threshold = 1815; // 90%
+        consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].period = 2016;</code></pre><script type="application/json" class="cref-notes">[{"line": 110, "html": "Bit 2 de nVersion."}, {"line": 111, "html": "Inicio: 24 de abril de 2021."}, {"line": 112, "html": "Fin: 11 de agosto de 2021 (tres meses: «Speedy Trial»)."}, {"line": 113, "html": "Aunque se bloqueó en junio de 2021, no se activó hasta el bloque 709 632 (noviembre de 2021), para dar tiempo a actualizar."}, {"line": 114, "html": "90 % de 2016."}]</script></figure>
+
+<h2>Cómo afecta a la validación: banderas de script</h2>
+<p>Cada soft fork de Script se traduce en una <b>bandera</b> que el intérprete consulta (<code>if (flags &amp; SCRIPT_VERIFY_…)</code>). Esta función decide qué banderas aplicar a cada bloque según su altura:</p>
+<figure class="cref" id="c4" data-start="2254" data-file="src/validation.cpp"><figcaption><span class="cref-file">src/validation.cpp</span><span class="cref-lines">líneas 2254–2293</span><span class="cref-actions"><a href="https://github.com/bitcoin/bitcoin/blob/9be056a8a72b624dae9623b2f7bded92c2a21c91/src/validation.cpp#L2254-L2293" target="_blank" rel="noopener" title="Ver en GitHub (commit fijado)">GitHub ↗</a><a href="explorador.html#f=src/validation.cpp&amp;l=2254" title="Abrir el archivo completo en el explorador">Archivo completo</a><button type="button" class="cref-toggle" title="Mostrar u ocultar explicaciones">Explicaciones: sí</button></span></figcaption><pre class="cref-src"><code class="language-cpp">script_verify_flags GetBlockScriptFlags(const CBlockIndex&amp; block_index, const ChainstateManager&amp; chainman)
+{
+    const Consensus::Params&amp; consensusparams = chainman.GetConsensus();
+
+    // BIP16 didn&#x27;t become active until Apr 1 2012 (on mainnet, and
+    // retroactively applied to testnet)
+    // However, only one historical block violated the P2SH rules (on both
+    // mainnet and testnet).
+    // Similarly, only one historical block violated the TAPROOT rules on
+    // mainnet.
+    // For simplicity, always leave P2SH+WITNESS+TAPROOT on except for the two
+    // violating blocks.
+    script_verify_flags flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT};
+    const auto it{consensusparams.script_flag_exceptions.find(*Assert(block_index.phashBlock))};
+    if (it != consensusparams.script_flag_exceptions.end()) {
+        flags = it-&gt;second;
+    }
+
+    // Enforce the DERSIG (BIP66) rule
+    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_DERSIG)) {
+        flags |= SCRIPT_VERIFY_DERSIG;
+    }
+
+    // Enforce CHECKLOCKTIMEVERIFY (BIP65)
+    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_CLTV)) {
+        flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
+    }
+
+    // Enforce CHECKSEQUENCEVERIFY (BIP112)
+    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_CSV)) {
+        flags |= SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;
+    }
+
+    // Enforce BIP147 NULLDUMMY (activated simultaneously with segwit)
+    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_SEGWIT)) {
+        flags |= SCRIPT_VERIFY_NULLDUMMY;
+    }
+
+    return flags;
+}</code></pre><script type="application/json" class="cref-notes">[{"line": 2266, "html": "P2SH, SegWit y Taproot se aplican a <b>todos<\/b> los bloques, incluso los anteriores a su activación. ¿Cómo es posible? Porque se comprobó que ningún bloque antiguo los viola…"}, {"line": 2267, "html": "…salvo dos bloques concretos, listados por hash en chainparams.cpp, que se validan con banderas especiales."}, {"line": 2274, "html": "Firmas DER estrictas desde BIP66."}, {"line": 2279, "html": "OP_CHECKLOCKTIMEVERIFY (antes OP_NOP2) desde BIP65."}, {"line": 2284, "html": "OP_CHECKSEQUENCEVERIFY (antes OP_NOP3) desde CSV."}, {"line": 2289, "html": "El argumento extra de OP_CHECKMULTISIG debe estar vacío, desde SegWit."}]</script></figure>
+<div class="callout"><span class="t">Banderas de consenso frente a banderas de política</span><p>En <code>src/policy/policy.h</code> verás <code>MANDATORY_SCRIPT_VERIFY_FLAGS</code> (consenso) y <code>STANDARD_SCRIPT_VERIFY_FLAGS</code> (consenso + extras de política como <code>LOW_S</code>, <code>CLEANSTACK</code>, <code>DISCOURAGE_UPGRADABLE_NOPS</code>). Las «DISCOURAGE» existen para que nadie use hoy los huecos reservados a futuros soft forks.</p></div>
+
+<h2>Cómo detectar un cambio de consenso entre versiones</h2>
+<p>Esta es la habilidad más valiosa de un auditor. Entre dos versiones, revisa con lupa los cambios en:</p>
+<pre class="shell">git diff v30.0..v31.1 --stat -- src/consensus src/script/interpreter.cpp \
+    src/validation.cpp src/pow.cpp src/primitives src/kernel/chainparams.cpp \
+    src/versionbits.cpp src/arith_uint256.cpp src/uint256.* src/serialize.h \
+    src/crypto src/secp256k1 src/hash.* src/pubkey.cpp src/chain.*</pre>
+<p>Y pregúntate en cada cambio: ¿puede hacer que mi nodo acepte un bloque que antes rechazaba (sería un hard fork) o rechace uno que antes aceptaba (soft fork o, peor, una división de la red)?</p>
+
+<div class="quiz" data-title="Test del nivel 10"><script type="application/json">[
+{"q":"¿Qué caracteriza a un soft fork?","o":["Hace las reglas más laxas","Hace las reglas más estrictas: los nodos viejos siguen aceptando los bloques nuevos","Requiere que todos actualicen a la vez","Cambia la prueba de trabajo"],"a":1,"why":"Lo nuevo válido es un subconjunto de lo viejo válido."},
+{"q":"¿Cuántos bloques de 2016 deben señalizar para que un despliegue BIP9 típico quede LOCKED_IN?","o":["1008","1815 (90 %)","1916 (95 %)","2016"],"a":1,"why":"threshold = 1815 en chainparams."},
+{"q":"¿Qué significa que SegWit esté «enterrado»?","o":["Que se eliminó","Que se activa por una altura fija en el código en lugar de por señalización","Que es secreto","Que sólo vale en testnet"],"a":1,"why":"SegwitHeight = 481824."},
+{"q":"¿Por qué existen OP_NOP y versiones de testigo sin significado?","o":["Son errores","Son huecos para que futuros soft forks les den reglas sin romper nodos antiguos","Para pruebas","Para mineros"],"a":1,"why":"Así nacieron CLTV (OP_NOP2), CSV (OP_NOP3) y Taproot (testigo v1)."},
+{"q":"¿Desde qué altura se aplican las reglas de Taproot según GetBlockScriptFlags?","o":["709632","Desde siempre, salvo un bloque de excepción","481824","Nunca"],"a":1,"why":"Se aplica a toda la historia porque ningún bloque anterior la viola (salvo la excepción listada)."}
+]</script></div>
+
+    <nav class="prevnext"><a class="prev" href="nivel-9.html"><span>← Anterior</span>Nivel 9 · Mempool, política y minería</a><a class="next" href="nivel-11.html"><span>Siguiente →</span>Nivel 11 · La cartera (wallet)</a></nav>
+    <footer class="foot">
+      <p>Todo el código mostrado se extrae automáticamente de <a href="https://github.com/bitcoin/bitcoin/tree/9be056a8a72b624dae9623b2f7bded92c2a21c91" target="_blank" rel="noopener">bitcoin/bitcoin @ 9be056a8a72b</a> (etiqueta v31.1) con <code>build.py</code>. No te fíes de esta web tampoco: compara cada fragmento con tu propia copia del código.</p>
+      <p class="muted small">Proyecto educativo independiente, sin relación oficial con los desarrolladores de Bitcoin Core. Código de Bitcoin Core bajo licencia MIT.</p>
+    </footer>
+  </main>
+  <aside class="toc"><div class="toc-title">En esta página</div><ol></ol></aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cmake.min.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/crypto.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/games.js"></script>
+
+<script type="module" src="assets/diagrams.js"></script>
+</body>
+</html>

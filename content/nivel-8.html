@@ -1,0 +1,123 @@
+<div class="kicker">Nivel 8 · Comunicación</div>
+<h1>La red P2P</h1>
+<p class="lead">Tu nodo habla con otros nodos sin ningún servidor central. Este código no decide qué es válido (eso es el consenso), pero es la <b>superficie de ataque</b> más expuesta: cualquiera en Internet puede enviarte bytes. Por eso gran parte del código de red es defensivo.</p>
+
+<h2>Dos capas</h2>
+<div class="grid2">
+  <div class="card"><h4><src file="src/net.cpp">net.cpp</src> — CConnman</h4><p>«El cartero»: abre y cierra sockets, gestiona hilos, cifra (BIP324), parte el flujo de bytes en mensajes. No entiende qué dicen.</p></div>
+  <div class="card"><h4><src file="src/net_processing.cpp">net_processing.cpp</src> — PeerManager</h4><p>«El que lee las cartas»: interpreta cada mensaje (version, headers, block, tx…), decide qué pedir, a quién, y castiga a los que se portan mal.</p></div>
+</div>
+<pre class="mermaid">
+flowchart LR
+  S["Socket TCP<br/>(o Tor / I2P / CJDNS)"] --> T["Transporte v2 (BIP324)<br/>ChaCha20-Poly1305"]
+  T --> N["CConnman<br/>ThreadSocketHandler"]
+  N -->|"mensajes completos"| Q["Cola por par"]
+  Q --> PM["PeerManager::ProcessMessages<br/>ThreadMessageHandler"]
+  PM --> V["validation.cpp / mempool"]
+  PM -->|"respuestas"| N
+</pre>
+
+<h2>Formato de un mensaje</h2>
+<code-ref file="src/protocol.h" start="class CMessageHeader" end="uint8_t pchChecksum[CHECKSUM_SIZE]{};" title="cabecera de 24 bytes (transporte v1)">
+  <n m="MESSAGE_TYPE_SIZE = 12;">El tipo de mensaje: 12 caracteres ASCII rellenos con ceros (p. ej. «block»).</n>
+  <n m="HEADER_SIZE =">Total: 4 (magic) + 12 (tipo) + 4 (longitud) + 4 (checksum) = 24 bytes.</n>
+  <n m="MessageStartChars pchMessageStart{};">«Magic bytes»: <code>f9 be b4 d9</code> en mainnet. Identifica la red (no mezclar mainnet con testnet) y marca el inicio de cada mensaje.</n>
+  <n m="uint32_t nMessageSize">Longitud del contenido. Se limita (4 MB) para que nadie anuncie mensajes gigantes.</n>
+  <n m="uint8_t pchChecksum[CHECKSUM_SIZE]{};">Los 4 primeros bytes del SHA256d del contenido: detecta corrupción. (En v2 lo sustituye el cifrado autenticado.)</n>
+</code-ref>
+<div class="game" data-game="p2pmsg"></div>
+
+<h3>Todos los mensajes del protocolo</h3>
+<div class="table-wrap tall"><auto-table kind="msgtypes"/></div>
+
+<h2>El saludo (handshake)</h2>
+<pre class="mermaid">
+sequenceDiagram
+  participant A as Tu nodo
+  participant B as Otro nodo
+  A->>B: version (mi versión, servicios, altura, nonce)
+  B->>A: version
+  Note over A,B: Se negocian extras antes de verack
+  B->>A: wtxidrelay, sendaddrv2, sendtxrcncl
+  A->>B: verack
+  B->>A: verack
+  A->>B: sendheaders, sendcmpct, feefilter, getheaders
+  B->>A: headers (hasta 2000)
+  A->>B: getdata (bloques que faltan)
+  B->>A: block
+  loop cada ~2 minutos
+    A->>B: ping(nonce)
+    B->>A: pong(nonce)
+  end
+</pre>
+<code-ref file="src/net_processing.cpp" start="if (msg_type == NetMsgType::VERSION) {" end="vRecv >> LIMITED_STRING(strSubVer, MAX_SUBVERSION_LENGTH);" title="recibir «version»">
+  <n m="if (pfrom.nVersion != 0) {">Un par sólo puede enviar «version» una vez.</n>
+  <n m="vRecv >> nVersion >> Using<CustomUintFormatter<8>>(nServices) >> nTime;">Lee versión de protocolo, servicios ofrecidos (bits: NODE_NETWORK = tiene todos los bloques, NODE_WITNESS, NODE_P2P_V2…) y su hora.</n>
+  <n m="!HasAllDesirableServiceFlags(nServices)">Si nos conectamos nosotros y el par no ofrece lo que necesitamos, desconectamos.</n>
+  <n m="if (nVersion < MIN_PEER_PROTO_VERSION) {">Versiones demasiado antiguas: fuera.</n>
+  <n m="vRecv >> nNonce;">Un número aleatorio: si recibimos nuestro propio nonce, ¡nos hemos conectado a nosotros mismos!</n>
+  <n m="LIMITED_STRING(strSubVer, MAX_SUBVERSION_LENGTH)">El «user agent» (p. ej. <code>/Satoshi:31.1.0/</code>), con longitud limitada: cualquier dato del exterior se acota.</n>
+</code-ref>
+
+<h2>Sincronizar la cadena: primero las cabeceras</h2>
+<p>Un nodo nuevo descarga primero <b>todas las cabeceras</b> (80 bytes cada una, ~75 MB en total), elige la cadena con más trabajo y después descarga los bloques en paralelo de varios pares. Pero hay un riesgo: un atacante podría enviar millones de cabeceras falsas de poca dificultad para llenar tu memoria. La defensa está en <src file="src/headerssync.cpp">headerssync.cpp</src>:</p>
+<code-ref file="src/headerssync.h" start="class HeadersSyncState {" end="FINAL" title="sincronización en dos fases">
+  <n m="PRESYNC,">Fase 1: se reciben las cabeceras del par pero <b>no se guardan</b>; sólo se suma su trabajo y se guarda un compromiso (unos bits de hash) cada cierto número.</n>
+  <n m="REDOWNLOAD,">Fase 2: si esa cadena supera <code>nMinimumChainWork</code> (un valor público fijado en cada versión), se vuelven a pedir las cabeceras y se comprueba que coinciden con los compromisos; ahora sí se guardan.</n>
+  <n m="FINAL">Así, un atacante tendría que hacer trabajo real (minar) para hacerte gastar memoria.</n>
+</code-ref>
+
+<h2>Recibir un bloque</h2>
+<code-ref file="src/net_processing.cpp" start="if (msg_type == NetMsgType::BLOCK)" end="ProcessBlock(pfrom, pblock, forceProcessing, min_pow_checked);">
+  <n m="vRecv >> TX_WITH_WITNESS(*pblock);">Deserializa el bloque (con testigos). Si los bytes están mal formados, salta una excepción y el mensaje se descarta.</n>
+  <n m="IsBlockMutated(">Comprobación rápida de mutación (Merkle y testigos) antes de nada: si el bloque fue manipulado, el par se marca como malicioso.</n>
+  <n m="forceProcessing = IsBlockRequested(hash);">¿Lo habíamos pedido nosotros? Los bloques no solicitados sólo se procesan si son prometedores.</n>
+  <n m="GetAntiDoSWorkThreshold()">Antidenegación de servicio: el bloque debe estar en una cadena con suficiente trabajo.</n>
+  <n m="ProcessBlock(pfrom, pblock, forceProcessing, min_pow_checked);">Y de aquí a <code>ProcessNewBlock</code>, el viaje que viste en el nivel 6.</n>
+</code-ref>
+
+<h2>Castigar a los tramposos</h2>
+<code-ref file="src/net_processing.cpp" fn="PeerManagerImpl::MaybePunishNodeForBlock" title="¿quién envió un bloque inválido?">
+  <n m="case BlockValidationResult::BLOCK_CONSENSUS:">Si un par nos manda un bloque que rompe el consenso o está mutado…</n>
+  <n m="if (peer) Misbehaving(*peer, message);">…se le marca como «mal comportamiento»: se desconecta y su IP queda desaconsejada (no se le aceptan conexiones preferentes durante un tiempo).</n>
+  <n m="case BlockValidationResult::BLOCK_TIME_FUTURE:">Un bloque «del futuro» no es culpa del par necesariamente (quizá tu reloj va mal): no se castiga.</n>
+</code-ref>
+
+<h2>Defensa contra el ataque «eclipse»</h2>
+<p>Si un atacante controlara todas tus conexiones, podría ocultarte bloques o mostrarte una cadena falsa (aunque no podría falsificar firmas ni prueba de trabajo). Bitcoin Core se defiende así:</p>
+<div class="table-wrap"><table class="data">
+<thead><tr><th>Defensa</th><th>Dónde</th></tr></thead>
+<tbody>
+<tr><td>8 conexiones salientes completas + 2 sólo de bloques (invisibles para la topología de transacciones) + 1 «feeler» de prueba</td><td><src file="src/net.h" m="MAX_OUTBOUND_FULL_RELAY_CONNECTIONS">net.h</src></td></tr>
+<tr><td>Gestor de direcciones con 1024 cubos «nuevos» y 256 «probados»; la posición depende de una clave secreta local y del grupo de red de origen, para que un atacante con muchas IPs del mismo rango no llene la tabla</td><td><src file="src/addrman_impl.h" m="ADDRMAN_NEW_BUCKET_COUNT_LOG2">addrman_impl.h</src></td></tr>
+<tr><td>Diversidad de grupos de red / sistemas autónomos (asmap) en las salientes</td><td><src file="src/netgroup.cpp">netgroup.cpp</src></td></tr>
+<tr><td>Anclas: al reiniciar, se reconecta a los pares sólo-bloques anteriores</td><td><code>anchors.dat</code>, <src file="src/addrdb.cpp">addrdb.cpp</src></td></tr>
+<tr><td>Expulsión de entrantes protegiendo a los «útiles» (baja latencia, que envían bloques/tx nuevos, de redes diversas)</td><td><src file="src/node/eviction.cpp">eviction.cpp</src></td></tr>
+</tbody></table></div>
+<code-ref file="src/node/eviction.cpp" fn="SelectNodeToEvict" title="¿a quién echar cuando no hay hueco?">
+  <n m="ProtectNoBanConnections(vEvictionCandidates);">Nunca se echa a los pares con permiso especial…</n>
+  <n m="ProtectOutboundConnections(vEvictionCandidates);">…ni a los que conectamos nosotros.</n>
+  <n m="EraseLastKElements(vEvictionCandidates, CompareNetGroupKeyed, 4);">Se protegen 4 por grupo de red, elegidos con una clave secreta: el atacante no puede predecir cuáles.</n>
+  <n m="ReverseCompareNodeMinPingTime, 8);">8 con menor latencia: para falsificarlo habría que estar físicamente cerca.</n>
+  <n m="CompareNodeTXTime, 4);">4 que nos dieron transacciones nuevas útiles: cuesta trabajo real.</n>
+  <n m="CompareNodeBlockTime, 4);">4 que nos dieron bloques nuevos: requiere minar.</n>
+  <n m="// Identify the network group with the most connections and youngest member.">De los que quedan, se expulsa uno del grupo de red con más conexiones (el más reciente): así un atacante con muchas IPs parecidas es el primero en salir.</n>
+</code-ref>
+
+<h2>Retransmitir transacciones y bloques</h2>
+<div class="grid2">
+  <div class="card"><h4>inv / getdata</h4><p>Se anuncia «tengo la tx X» (por wtxid) y el interesado la pide. <src file="src/txrequest.cpp">txrequest.cpp</src> decide a quién pedirla, con preferencia por salientes y tiempos de espera.</p></div>
+  <div class="card"><h4>Compact blocks (BIP152)</h4><p>Como tu mempool ya tiene casi todas las transacciones, el bloque llega como cabecera + IDs cortos de 6 bytes. <src file="src/blockencodings.cpp">blockencodings.cpp</src></p></div>
+  <div class="card"><h4>Transporte v2 (BIP324)</h4><p>Cifrado oportunista: un espía no ve qué transacciones envías. <src file="src/bip324.cpp">bip324.cpp</src></p></div>
+  <div class="card"><h4>Tor, I2P, CJDNS</h4><p>Redes de anonimato integradas: <src file="src/torcontrol.cpp">torcontrol.cpp</src>, <src file="src/i2p.cpp">i2p.cpp</src></p></div>
+</div>
+
+<div class="callout"><span class="t">Para auditar la red</span><p>Pregúntate en cada handler de <code>ProcessMessage</code>: ¿qué pasa si el par envía datos enormes, repetidos, desordenados o contradictorios? ¿Hay un límite de memoria y de CPU? ¿Se castiga o se ignora? Los fuzzers de <src file="src/test/fuzz/process_message.cpp">src/test/fuzz/process_message.cpp</src> hacen exactamente eso de forma automática.</p></div>
+
+<div class="quiz" data-title="Test del nivel 8"><script type="application/json">[
+{"q":"¿Qué indican los «magic bytes» f9beb4d9?","o":["La versión del software","Que el mensaje es de mainnet y dónde empieza","El tipo de mensaje","La longitud"],"a":1,"why":"pchMessageStart distingue redes y delimita mensajes."},
+{"q":"¿Por qué existe la sincronización de cabeceras en dos fases (PRESYNC/REDOWNLOAD)?","o":["Para ir más rápido","Para que un atacante no llene tu memoria con cabeceras de poca dificultad","Para cifrar","Por compatibilidad"],"a":1,"why":"Sólo se guardan cabeceras de cadenas que superan nMinimumChainWork."},
+{"q":"¿Qué puede hacer un atacante que te «eclipsa» (controla todas tus conexiones)?","o":["Robarte bitcoins con firmas falsas","Ocultarte bloques/transacciones o darte una cadena con menos trabajo","Cambiar las reglas de consenso de tu nodo","Nada"],"a":1,"why":"No puede falsificar firmas ni PoW, pero sí aislarte."},
+{"q":"¿Por qué el nodo protege de la expulsión a pares que le enviaron bloques nuevos?","o":["Por amistad","Porque eso requiere trabajo real que un atacante barato no puede simular","Por azar","No los protege"],"a":1,"why":"Comentarios de SelectNodeToEvict."},
+{"q":"¿Qué capa decide si un bloque es válido?","o":["net.cpp","net_processing.cpp","validation.cpp (consenso)","addrman.cpp"],"a":2,"why":"La red sólo transporta; validation.cpp decide."}
+]</script></div>
